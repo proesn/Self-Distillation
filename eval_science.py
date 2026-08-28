@@ -26,6 +26,7 @@ def parse_args():
                         help="Seed for vLLM sampling")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.8)
     parser.add_argument("--max_model_len", type=int, default=4096)
+    parser.add_argument("--run_dir", type=str, default=None, help="Run record folder to append results to (default: inferred from a checkpoints/<run_id>/ path)")
     return parser.parse_args()
 
 
@@ -205,6 +206,14 @@ def main():
             "max_model_len": args.max_model_len,
         }
     }
+
+    from sdft.runlog import infer_run_dir, record_eval
+
+    record_eval(
+        args.run_dir or infer_run_dir(args.adapter_path, args.model_path), "science",
+        {"accuracy": float(accuracy), "num_total": len(scores)},
+        settings=results_to_save["config"], checkpoint=args.adapter_path or args.model_path,
+    )
 
     output_path = os.path.join(output_dir, "eval_results.json")
     with open(output_path, "w") as f:

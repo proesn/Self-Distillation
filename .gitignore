@@ -12,3 +12,5 @@ graphify-out/
 experiment-runs/
 # HF datasets .map() cache files written next to load_from_disk dirs
 **/cache-*.arrow
+# training outputs (run records live in experiments/runs/, tracked)
+checkpoints/

@@ -28,6 +28,7 @@ def parse_args():
     parser.add_argument("--max_lora_rank", type=int, default=128)
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.8)
     parser.add_argument("--max_model_len", type=int, default=None)
+    parser.add_argument("--run_dir", type=str, default=None, help="Run record folder to append results to (default: inferred from a checkpoints/<run_id>/ path)")
     return parser.parse_args()
 
 
@@ -215,6 +216,14 @@ def main():
         }
     }
     
+    from sdft.runlog import infer_run_dir, record_eval
+
+    record_eval(
+        args.run_dir or infer_run_dir(args.adapter_path, args.model_path), "tooluse",
+        {"accuracy": float(accuracy), "num_total": len(scores)},
+        settings=results_to_save["config"], checkpoint=args.adapter_path or args.model_path,
+    )
+
     output_path = os.path.join(output_dir, "eval_results.json")
     with open(output_path, "w") as f:
         json.dump(results_to_save, f, indent=2)

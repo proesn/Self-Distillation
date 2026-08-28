@@ -69,6 +69,7 @@ def parse_args():
         default=5,
         help="Print the first N prompts/responses for inspection",
     )
+    parser.add_argument("--run_dir", type=str, default=None, help="Run record folder to append results to (default: inferred from a checkpoints/<run_id>/ path)")
     return parser.parse_args()
 
 
@@ -378,6 +379,14 @@ def main():
             "max_model_len": args.max_model_len,
         },
     }
+
+    from sdft.runlog import infer_run_dir, record_eval
+
+    record_eval(
+        args.run_dir or infer_run_dir(args.adapter_path, args.model_path), "kkp",
+        {"accuracy": accuracy, "parse_rate": parse_rate, "num_total": len(scores)},
+        settings=results_to_save["config"], checkpoint=args.adapter_path or args.model_path,
+    )
 
     results_path = os.path.join(output_dir, "eval_kkp_results.json")
     with open(results_path, "w") as f:

@@ -19,6 +19,7 @@ from distil_trainer import DistilTrainer
 from sdft.data import DATASETS, load_train_dataset, prompt_length_report
 from sdft.eval_callback import PeriodicEvalCallback
 from sdft.models import attach_adapters, load_base_model, load_tokenizer
+from sdft.runlog import CHECKPOINTS_DIR, MetricsCallback, RunRecord, infer_run_dir, make_run_id
 
 
 def parse_args():
@@ -28,7 +29,7 @@ def parse_args():
     parser.add_argument("--num_train_epochs", type=float, default=1, help="Number of training epochs")
     parser.add_argument("--num_prompts_per_batch", type=int, default=32, help="Prompts per optimizer step (= gradient accumulation steps at batch size 1)")
     parser.add_argument("--ref_model_mixup_alpha", type=float, default=0.01, help="EMA rate of the teacher toward the student (0 = frozen teacher)")
-    parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
+    parser.add_argument("--output_dir", type=str, default=None, help="Checkpoint directory (default: checkpoints/<run_id>)")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct", help="Model name or path")
     parser.add_argument("--dataset_name", type=str, default="tooluse", choices=DATASETS, help="Training dataset")
     parser.add_argument("--seed", type=int, default=42, help="Seed")
@@ -52,6 +53,14 @@ def parse_args():
     parser.add_argument("--eval_temperature", type=float, default=0.0, help="0 = greedy")
     parser.add_argument("--eval_seed", type=int, default=42)
     parser.add_argument("--eval_num_samples", type=int, default=-1, help="If > 0, evaluate only the first N samples of each eval set")
+    # Run record (experiments/runs/<run_id>/) — see sdft/runlog.py
+    parser.add_argument("--name", type=str, default=None, help="Short human label; run_id = YYYY-MM-DD_<label> (default: dataset name)")
+    parser.add_argument("--group", type=str, default=None, help="Sweep / experiment group the run belongs to")
+    parser.add_argument("--tags", type=str, nargs="*", default=[], help="Free tags")
+    parser.add_argument("--idea", type=str, nargs="*", default=[], help="Brain idea slugs this run tests")
+    parser.add_argument("--hypothesis", type=str, default=None, help="One line written into notes.md")
+    parser.add_argument("--no_record", action="store_true", help="Do not write a run record (debug runs)")
+    parser.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.3, help="Share of the GPU reserved by the colocated vLLM engine")
     # Tokenizer / logging
     parser.add_argument("--enable_thinking", action="store_true", help="Keep Qwen3 thinking mode on (default: chat template rendered with enable_thinking=False)")
     parser.add_argument("--run_name", type=str, default=None, help="wandb / Trainer run name")
@@ -62,6 +71,9 @@ def parse_args():
 def main():
     args = parse_args()
     set_seed(args.seed)
+    run_id = make_run_id(args.name or args.dataset_name)
+    args.output_dir = args.output_dir or os.path.join(CHECKPOINTS_DIR, run_id)
+    args.run_name = args.run_name or run_id
     if args.wandb_project is not None:
         os.environ["WANDB_PROJECT"] = args.wandb_project
 
@@ -94,7 +106,7 @@ def main():
         use_vllm=True,
         vllm_mode="colocate",
         vllm_tensor_parallel_size=1,
-        vllm_gpu_memory_utilization=0.3,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
         vllm_enable_sleep_mode=True,
         learning_rate=args.learning_rate,
         warmup_ratio=0.1,
@@ -125,6 +137,19 @@ def main():
 
     model, teacher_model, peft_config = attach_adapters(model, teacher_model, args)
 
+    record = None
+    callbacks = []
+    if not args.no_record:
+        parent = infer_run_dir(args.adapter_path)
+        record = RunRecord.start(
+            run_id, args, config, dataset, args.model_name,
+            lora={"r": args.lora_r, "alpha": args.lora_alpha, "dropout": args.lora_dropout} if (args.use_lora or args.adapter_path) else None,
+            output_dir=args.output_dir, group=args.group, tags=args.tags, idea=args.idea,
+            parent_run=os.path.basename(parent) if parent else None,
+        )
+        record.write_notes_skeleton(args.hypothesis)
+        callbacks.append(MetricsCallback(record))
+
     eval_callback = None
     if args.eval_steps > 0:
         eval_callback = PeriodicEvalCallback(
@@ -136,6 +161,7 @@ def main():
             seed=args.eval_seed,
             eval_num_samples=args.eval_num_samples,
         )
+        callbacks.append(eval_callback)
 
     trainer = DistilTrainer(
         model=model,
@@ -144,12 +170,21 @@ def main():
         train_dataset=dataset,
         processing_class=tokenizer,
         peft_config=peft_config,
-        callbacks=[eval_callback] if eval_callback is not None else None,
+        callbacks=callbacks or None,
     )
     if eval_callback is not None:
         eval_callback.trainer = trainer
 
-    trainer.train()
+    try:
+        trainer.train()
+    except KeyboardInterrupt:
+        if record: record.finalize("killed", error="KeyboardInterrupt")
+        raise
+    except Exception as e:
+        if record: record.finalize("failed", error=repr(e))
+        raise
+    if record:
+        record.finalize("finished")
 
 
 if __name__ == "__main__":
