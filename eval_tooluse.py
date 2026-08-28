@@ -3,11 +3,12 @@ import os
 import json
 import torch
 import numpy as np
-from datasets import Dataset, load_from_disk
+from datasets import load_from_disk
 from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
 import re
 from collections import Counter
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def parse_args():
@@ -20,48 +21,93 @@ def parse_args():
                         help="Directory to save evaluation results (defaults to model_path)")
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="Sampling temperature (0 for greedy)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Seed for vLLM sampling")
+    parser.add_argument("--adapter_path", type=str, default=None,
+                        help="Optional LoRA adapter to load with vLLM")
+    parser.add_argument("--max_lora_rank", type=int, default=128)
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.8)
+    parser.add_argument("--max_model_len", type=int, default=None)
     return parser.parse_args()
 
 
-def load_model_and_tokenizer(model_path, gpu_memory_utilization=0.8):
+def load_model_and_tokenizer(
+    model_path,
+    gpu_memory_utilization=0.8,
+    max_model_len=None,
+    adapter_path=None,
+    max_lora_rank=128,
+):
     """Load model using vLLM and tokenizer from the given path."""
+    from vllm import LLM
+
     print(f"Loading model from {model_path}")
     tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side='left')
+    llm_kwargs = {}
+    if adapter_path is not None:
+        print(f"Loading LoRA adapter from {adapter_path}")
+        llm_kwargs.update({"enable_lora": True, "max_lora_rank": max_lora_rank, "max_loras": 1})
+    if max_model_len is not None:
+        llm_kwargs["max_model_len"] = max_model_len
     llm = LLM(
         model=model_path,
         gpu_memory_utilization=gpu_memory_utilization,
         dtype=torch.bfloat16,
         trust_remote_code=True,
+        **llm_kwargs,
     )
     return llm, tokenizer
 
 
+def apply_chat_template_no_thinking(tokenizer, messages):
+    try:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    except TypeError:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+
 def load_test_data(tokenizer):
     """Load and prepare tooluse test dataset."""
-    data_dir = 'data/tooluse_data/eval_data'
+    data_dir = os.path.join(SCRIPT_DIR, 'data', 'tooluse_data', 'eval_data')
     data = load_from_disk(data_dir).to_list()
     
     # Format prompts
     for example in data:
-        example['prompt'] = tokenizer.apply_chat_template(
+        example['prompt'] = apply_chat_template_no_thinking(
+            tokenizer,
             [{'role': 'user', 'content': example['prompt']}],
-            tokenize=False,
-            add_generation_prompt=True
         )
     
     return data
 
 
-def generate_responses(llm, tokenizer, prompts, max_new_tokens=1024, temperature=0.0):
+def generate_responses(llm, tokenizer, prompts, max_new_tokens=1024, temperature=0.0, seed=42, adapter_path=None):
     """Generate responses from the model using vLLM."""
+    from vllm import SamplingParams
+
     sampling_params = SamplingParams(
         temperature=temperature,
         max_tokens=max_new_tokens,
+        seed=seed,
         stop_token_ids=[tokenizer.eos_token_id] if tokenizer.eos_token_id else None,
     )
     
     print(f"Generating responses for {len(prompts)} prompts...")
-    outputs = llm.generate(prompts, sampling_params)
+    lora_request = None
+    if adapter_path is not None:
+        from vllm.lora.request import LoRARequest
+
+        lora_request = LoRARequest(lora_name="tooluse_eval_lora", lora_int_id=1, lora_path=adapter_path)
+    outputs = llm.generate(prompts, sampling_params, lora_request=lora_request)
     return [output.outputs[0].text for output in outputs]
 
 
@@ -117,7 +163,13 @@ def main():
     args = parse_args()
     
     # Load model and data
-    llm, tokenizer = load_model_and_tokenizer(args.model_path)
+    llm, tokenizer = load_model_and_tokenizer(
+        args.model_path,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_model_len=args.max_model_len,
+        adapter_path=args.adapter_path,
+        max_lora_rank=args.max_lora_rank,
+    )
     test_data = load_test_data(tokenizer)
     
     prompts = [example['prompt'] for example in test_data]
@@ -125,9 +177,11 @@ def main():
     
     # Generate responses
     responses = generate_responses(
-        llm, tokenizer, prompts, 
-        args.max_new_tokens, 
-        args.temperature
+        llm, tokenizer, prompts,
+        args.max_new_tokens,
+        args.temperature,
+        args.seed,
+        adapter_path=args.adapter_path,
     )
     
     # Evaluate correctness
@@ -144,7 +198,7 @@ def main():
     print("=" * 60)
     
     # Save results
-    output_dir = args.output_dir if args.output_dir else args.model_path
+    output_dir = args.output_dir if args.output_dir else (args.adapter_path or args.model_path)
     os.makedirs(output_dir, exist_ok=True)
     
     results_to_save = {
@@ -154,8 +208,10 @@ def main():
         "per_sample_scores": scores,
         "config": {
             "model_path": args.model_path,
+            "adapter_path": args.adapter_path,
             "max_new_tokens": args.max_new_tokens,
             "temperature": args.temperature,
+            "seed": args.seed,
         }
     }
     

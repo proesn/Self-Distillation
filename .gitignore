@@ -6,3 +6,9 @@ wandb/
 results/
 bsub_outputs/
 .hyperparameter_search_scripts_main/
+# code graph for the research-buddy brain app (rebuild: graphify update . --no-cluster && graphify cluster-only . --no-label)
+graphify-out/
+# local run-ledger staging
+experiment-runs/
+# HF datasets .map() cache files written next to load_from_disk dirs
+**/cache-*.arrow

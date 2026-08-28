@@ -240,9 +240,12 @@ class DistilConfig(TrainingArguments):
         wandb_log_unique_prompts (`bool`, *optional*, defaults to `False`):
             Whether to log unique prompts in wandb. If `True`, only unique prompts are logged. If `False`, all prompts
             are logged.
+        save_lora_adapter_only (`bool`, *optional*, defaults to `False`):
+            Whether to save only the PEFT/LoRA adapter and processing class at checkpoints, without optimizer,
+            scheduler, RNG, or trainer state.
     """
 
-    _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS + ["model_init_kwargs"]
+    _VALID_DICT_FIELDS = getattr(TrainingArguments, "_VALID_DICT_FIELDS", []) + ["model_init_kwargs"]
 
     # Parameters whose default values are overridden from TrainingArguments
     learning_rate: float = field(
@@ -615,6 +618,12 @@ class DistilConfig(TrainingArguments):
             "help": "Number of tokens at the beginning of each completion to exclude from the loss calculation. "
             "This can be useful to avoid penalizing the model for the initial tokens of the response, which may be "
             "less predictable. A value of `0` (default) means all completion tokens are included in the loss."
+        },
+    )
+    save_lora_adapter_only: bool = field(
+        default=False,
+        metadata={
+            "help": "Save only PEFT/LoRA adapter files and tokenizer/processor files at checkpoints."
         },
     )
     vllm_importance_sampling_correction: bool = field(

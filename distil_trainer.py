@@ -115,19 +115,35 @@ class MemoryEfficientSyncRefModelCallback(TrainerCallback):
     def sync_target_model_memory_efficient(model, target_model, alpha):
         """
         Sync target_model to track model, gathering one parameter at a time.
-        
+
         This is O(1) in memory overhead instead of O(N) where N is model size.
+        Parameter matching is name- and shape-based so PEFT adapter parameters
+        cannot be accidentally mixed with base-model parameters.
         """
         deepspeed_plugin = AcceleratorState().deepspeed_plugin
         is_zero3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
-        
+
+        target_params = dict(target_model.named_parameters())
+        matched_params = []
+        skipped = 0
+        for name, model_param in model.named_parameters():
+            ref_param = target_params.get(name)
+            if ref_param is None or model_param.shape != ref_param.shape:
+                skipped += 1
+                continue
+            matched_params.append((name, model_param, ref_param))
+
+        if skipped:
+            logger.warning_once(
+                "Skipped %d parameter(s) while syncing ref model because their names or shapes did not match.",
+                skipped,
+            )
+
         if is_zero3:
             import deepspeed
-            
+
             # Iterate through parameters one at a time
-            for (name, model_param), (_, ref_param) in zip(
-                model.named_parameters(), target_model.named_parameters()
-            ):
+            for _, model_param, ref_param in matched_params:
                 # Gather only this pair of parameters
                 with deepspeed.zero.GatheredParameters(
                     [model_param, ref_param], modifier_rank=0
@@ -138,7 +154,7 @@ class MemoryEfficientSyncRefModelCallback(TrainerCallback):
                         )
         else:
             # Non-ZeRO-3: just iterate normally
-            for model_param, ref_param in zip(model.parameters(), target_model.parameters()):
+            for _, model_param, ref_param in matched_params:
                 MemoryEfficientSyncRefModelCallback._sync_param(model_param, ref_param, alpha)
 
     def on_step_end(self, args, state, control, **kwargs):
@@ -1773,4 +1789,24 @@ class DistilTrainer(BaseTrainer):
         else:
             model_name = self.args.hub_model_id.split("/")[-1]
         self.create_model_card(model_name=model_name)
+        if getattr(self.args, "save_lora_adapter_only", False):
+            checkpoint_folder = os.path.join(self.args.output_dir, f"checkpoint-{self.state.global_step}")
+            os.makedirs(checkpoint_folder, exist_ok=True)
+
+            unwrapped_model = self.accelerator.unwrap_model(model)
+            if not is_peft_model(unwrapped_model):
+                logger.warning(
+                    "`save_lora_adapter_only=True` was set, but the model is not a PEFT model. "
+                    "Falling back to the default checkpoint save."
+                )
+                super()._save_checkpoint(model, trial)
+                return
+
+            if self.is_world_process_zero():
+                unwrapped_model.save_pretrained(checkpoint_folder)
+                if self.processing_class is not None:
+                    self.processing_class.save_pretrained(checkpoint_folder)
+            self.accelerator.wait_for_everyone()
+            return
+
         super()._save_checkpoint(model, trial)
