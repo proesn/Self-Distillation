@@ -14,3 +14,5 @@ experiment-runs/
 **/cache-*.arrow
 # training outputs (run records live in experiments/runs/, tracked)
 checkpoints/
+# throwaway worktrees created by experiments/runs/*/launch.sh re-runs
+.rerun-worktrees/

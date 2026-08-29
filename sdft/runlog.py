@@ -12,10 +12,13 @@ Views (tables, comparisons, the brain ledger) are generated from these files by 
 """
 
 import atexit
+import hashlib
 import json
 import os
 import platform
 import re
+import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -121,6 +124,89 @@ def dataset_fingerprint(dataset):
     return {"rows": len(dataset), "fingerprint": getattr(dataset, "_fingerprint", None)}
 
 
+# Environment that shapes a run and is safe to record (never tokens/keys).
+ENV_KEYS = (
+    "CUDA_VISIBLE_DEVICES", "PROFILE", "LR", "EPOCHS", "SAVE_STEPS", "EVAL_STEPS", "MODEL",
+    "WANDB_PROJECT", "WANDB_MODE", "WANDB_RUN_GROUP", "HF_HOME", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
+    "PYTHONPATH", "CONDA_DEFAULT_ENV", "VIRTUAL_ENV", "OMP_NUM_THREADS",
+)
+ENV_PREFIXES = ("VLLM_", "SDFT_", "TORCH_", "NCCL_")
+ENV_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def launch_env():
+    out = {}
+    for k, v in os.environ.items():
+        if any(m in k.upper() for m in ENV_SECRET_MARKERS):
+            continue
+        if k in ENV_KEYS or k.startswith(ENV_PREFIXES):
+            out[k] = v
+    return dict(sorted(out.items()))
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read())
+    return h.hexdigest()
+
+
+def launch_info():
+    """How this process was started: the launcher script (if it exported SDFT_LAUNCH_CMD), env, python, argv."""
+    launcher = os.environ.get("SDFT_LAUNCHER")
+    return {
+        "invocation": os.environ.get("SDFT_LAUNCH_CMD"),        # what was typed, e.g. `scripts/train.sh kkp lr5e-5 --group x`
+        "launcher": launcher,                                     # path of that script
+        "launcher_sha256": _sha256(launcher) if launcher and os.path.exists(launcher) else None,
+        "python": sys.executable,
+        "cwd": os.getcwd(),
+        "argv": list(sys.argv),
+        "env": launch_env(),
+    }
+
+
+def write_launch_script(run_dir, info, git):
+    """launch.sh: re-run this exact run — same code state, env and command — under a new name."""
+    argv = list(info["argv"])
+    if "--name" in argv:
+        i = argv.index("--name")
+        argv[i + 1] = argv[i + 1] + "-rerun"
+    else:
+        argv += ["--name", os.path.basename(run_dir) + "-rerun"]
+    env_lines = "\n".join(f"export {k}={shlex.quote(v)}" for k, v in info["env"].items())
+    script = f"""#!/usr/bin/env bash
+# Re-run of {os.path.basename(run_dir)} — generated at launch by sdft/runlog.py.
+#   typed:   {info.get('invocation') or '(python invoked directly)'}
+#   host:    {socket.gethostname()}    cwd: {info['cwd']}
+#   python:  {info['python']}
+# Usage: bash experiments/runs/{os.path.basename(run_dir)}/launch.sh [--name <label>] [extra main.py args]
+#   Runs at the recorded code state. If your checkout differs (other commit, dirty tree, or the run
+#   had a code.patch), it runs inside a throwaway worktree under .rerun-worktrees/ — your checkout
+#   is never touched. SDFT_RERUN_SAME_CODE=0 runs your current code instead.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT"
+HERE="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+SHA={git.get('sha') or 'HEAD'}
+if [ "${{SDFT_RERUN_SAME_CODE:-1}}" = 1 ] && {{ [ "$(git rev-parse HEAD)" != "$SHA" ] || [ -n "$(git status --porcelain)" ] || [ -s "$HERE/code.patch" ]; }}; then
+  WT="$ROOT/.rerun-worktrees/${{SHA:0:10}}"
+  [ -d "$WT" ] || git worktree add --detach --quiet "$WT" "$SHA"
+  git -C "$WT" checkout --quiet -- .
+  [ -s "$HERE/code.patch" ] && git -C "$WT" apply "$HERE/code.patch"
+  echo "[launch.sh] running in worktree $WT at $SHA$([ -s "$HERE/code.patch" ] && echo ' + code.patch')"
+  cd "$WT"
+fi
+{env_lines}
+export SDFT_RUNS_DIR="${{SDFT_RUNS_DIR:-$ROOT/experiments/runs}}"
+export SDFT_CHECKPOINTS_DIR="${{SDFT_CHECKPOINTS_DIR:-$ROOT/checkpoints}}"
+exec "${{PYTHON:-{info['python']}}}" {shlex.join(argv[0:1])} {shlex.join(argv[1:])} "$@"
+"""
+    path = os.path.join(run_dir, "launch.sh")
+    with open(path, "w") as f:
+        f.write(script)
+    os.chmod(path, 0o755)
+    return path
+
+
 def _dump(path, obj):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -144,6 +230,10 @@ class RunRecord:
         git = git_state()
         with open(os.path.join(rec.dir, "code.patch"), "w") as f:
             f.write(_git("diff", "HEAD"))
+        launch = launch_info()
+        write_launch_script(rec.dir, launch, git)
+        if launch["launcher"] and os.path.exists(launch["launcher"]):
+            shutil.copyfile(launch["launcher"], os.path.join(rec.dir, "launcher.sh"))  # verbatim copy of the script that started this run
         rec.data = {
             "schema_version": SCHEMA_VERSION,
             "id": run_id,
@@ -158,7 +248,8 @@ class RunRecord:
             "host": socket.gethostname(),
             "gpu": gpu_name(),
             "git": git,
-            "cmd": " ".join(sys.argv),
+            "cmd": shlex.join(sys.argv),
+            "launch": launch,
             "args": {k: v for k, v in vars(args).items()},
             "config": {k: getattr(config, k, None) for k in CONFIG_FIELDS},
             "model": {"name": model_name, "revision": model_revision(model_name)},

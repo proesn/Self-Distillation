@@ -156,6 +156,9 @@ def show(run):
         f"wandb: {m.get('wandb_url')}",
         f"output_dir: {m.get('output_dir')}",
         f"cmd: {m.get('cmd')}",
+        f"typed: {(m.get('launch') or {}).get('invocation')}   launcher: {(m.get('launch') or {}).get('launcher')}",
+        f"env: {(m.get('launch') or {}).get('env')}",
+        f"rerun: bash {os.path.join(run.dir, 'launch.sh')}",
         "",
         "## config",
     ]

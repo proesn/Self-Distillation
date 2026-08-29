@@ -50,6 +50,25 @@ def cmd_brain_sync(a):
         print("  ", p)
 
 
+def cmd_rerun(a):
+    run = find_run(a.run_id)
+    path = os.path.join(run.dir, "launch.sh")
+    if not os.path.exists(path):
+        raise SystemExit(f"{run.id} has no launch.sh (recorded before launch manifests existed)")
+    launch = run.meta.get("launch") or {}
+    print(f"# typed : {launch.get('invocation') or '(python invoked directly)'}")
+    print(f"# code  : {(run.meta.get('git') or {}).get('sha')}{' + code.patch' if (run.meta.get('git') or {}).get('dirty') else ''}")
+    print(f"# env   : {' '.join(f'{k}={v}' for k, v in (launch.get('env') or {}).items())}")
+    print(f"# exact : {run.meta.get('cmd')}")
+    extra = list(a.args)
+    if a.name:
+        extra += ["--name", a.name]
+    cmd = ["bash", path, *extra]
+    print("$ " + " ".join(cmd))
+    if a.exec:
+        os.execvp("bash", cmd)
+
+
 def cmd_check(a):
     problems = views.check(load_runs(), running_hours=a.running_hours)
     if not problems:
@@ -87,6 +106,13 @@ def main(argv=None):
     s.add_argument("--brain-dir", default=brain.DEFAULT_BRAIN_EXPERIMENTS, help="the brain's experiments/ folder")
     s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_brain_sync)
+
+    s = sub.add_parser("rerun", help="print (or --exec) the re-run command of a recorded run")
+    s.add_argument("run_id")
+    s.add_argument("--name", default=None, help="label for the new run (default: <old>-rerun)")
+    s.add_argument("--exec", action="store_true", help="run it now")
+    s.add_argument("args", nargs=argparse.REMAINDER, help="extra main.py args (after --)")
+    s.set_defaults(fn=cmd_rerun)
 
     s = sub.add_parser("check", help="hygiene report (exit 1 if problems)")
     s.add_argument("--running-hours", type=float, default=24)

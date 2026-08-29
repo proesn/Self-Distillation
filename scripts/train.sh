@@ -9,6 +9,9 @@
 # PROFILE sets the colocated vLLM memory share and the in-training eval sample count;
 # the dataset sets prompt/completion lengths (kkp teacher prompts reach 4558 tokens, so 8192).
 set -euo pipefail
+# Record what was typed so the run's launch.sh can reproduce it (main.py reads these).
+export SDFT_LAUNCH_CMD="$(printf '%q ' "$0" "$@")"
+export SDFT_LAUNCHER="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 DATASET="${1:?dataset (tooluse|science|kkp)}"; LABEL="${2:?label}"; shift 2

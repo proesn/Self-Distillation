@@ -12,6 +12,10 @@ import tempfile
 import types
 
 TMP = tempfile.mkdtemp(prefix="explog-selftest-")
+# pretend we were started by scripts/train.sh, as the real launcher does
+os.environ["SDFT_LAUNCH_CMD"] = "scripts/train.sh kkp lr5e-5 --group kkp-lr-sweep"
+os.environ["SDFT_LAUNCHER"] = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "train.sh")
+os.environ["PROFILE"] = "a6000"; os.environ["LR"] = "5e-5"; os.environ["WANDB_API_KEY"] = "must-not-be-recorded"
 os.environ["SDFT_RUNS_DIR"] = os.path.join(TMP, "runs")
 os.environ["SDFT_CHECKPOINTS_DIR"] = os.path.join(TMP, "checkpoints")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -75,6 +79,11 @@ def main():
     assert ra.standalone()["science"]["accuracy"] == 0.61
     assert next(r for r in runs if r.id == c.run_id).status == "failed"
     assert os.path.exists(os.path.join(a.dir, "code.patch"))
+    launch = open(os.path.join(a.dir, "launch.sh")).read()
+    assert "git worktree add" in launch and "--name" in launch and "-rerun" in launch and launch.startswith("#!/usr/bin/env bash"), launch
+    assert os.path.exists(os.path.join(a.dir, "launcher.sh")), "launcher copy missing"
+    assert json.load(open(a.path))["launch"]["invocation"].startswith("scripts/train.sh"), json.load(open(a.path))["launch"]
+    print(launch)
     assert json.load(open(a.path))["git"]["sha"]
 
     index_path, n = views.write_index(path=os.path.join(TMP, "INDEX.md"), runs=runs)
