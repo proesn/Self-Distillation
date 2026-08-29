@@ -103,6 +103,21 @@ def gpu_name():
     return None
 
 
+def gpu_memory():
+    """Peak allocated / currently reserved GPU memory of this process (GB); vLLM colocated in-process is included."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return {
+                "gpu_mem_peak_gb": round(torch.cuda.max_memory_allocated() / 2**30, 2),
+                "gpu_mem_reserved_gb": round(torch.cuda.memory_reserved() / 2**30, 2),
+            }
+    except Exception:
+        pass
+    return {}
+
+
 def model_revision(model_name):
     """Commit hash of the HF model repo, from the hub if reachable, else from the local cache."""
     try:
@@ -320,10 +335,14 @@ class MetricsCallback(TrainerCallback):
             return
         row = {"step": state.global_step, "epoch": state.epoch, "time": utc_now()}
         row.update({k: v for k, v in logs.items() if isinstance(v, (int, float, str)) or v is None})
+        row.update(gpu_memory())
         with open(self.path, "a") as f:
             f.write(json.dumps(row) + "\n")
 
     def on_train_end(self, args, state, control, **kwargs):
+        peak = gpu_memory().get("gpu_mem_peak_gb")
+        if peak is not None:
+            self.record.set(peak_gpu_mem_gb=peak)
         self.record.finalize("finished")
 
 

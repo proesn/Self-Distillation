@@ -3,7 +3,7 @@
 #
 #   PROFILE=kakao|a6000  scripts/train.sh <tooluse|science|kkp> <label> [extra main.py args...]
 #
-#   LR=5e-5 EPOCHS=1 SAVE_STEPS=30 EVAL_STEPS=10 MODEL=Qwen/Qwen3-4B WANDB_PROJECT=sdft   (env overrides)
+#   LR=5e-5 EPOCHS=1 SAVE_STEPS=30 EVAL_STEPS=<profile: kakao 10, a6000 30> MODEL=Qwen/Qwen3-4B WANDB_PROJECT=sdft   (env overrides)
 #   e.g.  PROFILE=a6000 LR=1e-4 scripts/train.sh kkp lr1e-4 --group kkp-lr-sweep --idea opsd-kkp
 #
 # PROFILE sets the colocated vLLM memory share, the in-training eval sample count and (a6000)
@@ -20,8 +20,8 @@ DATASET="${1:?dataset (tooluse|science|kkp)}"; LABEL="${2:?label}"; shift 2
 PROFILE="${PROFILE:-kakao}"
 
 case "$PROFILE" in
-  kakao) VLLM_MEM=0.3;  EVAL_N=300; GC=() ;;                        # 80 GB class
-  a6000) VLLM_MEM=0.25; EVAL_N=100; GC=(--gradient_checkpointing) ;;  # 48 GB: recompute activations, shorter kkp windows
+  kakao) VLLM_MEM=0.3; EVAL_N=300; EVAL_EVERY=10; GC=() ;;                        # 80 GB class
+  a6000) VLLM_MEM=0.4; EVAL_N=100; EVAL_EVERY=30; GC=(--gradient_checkpointing) ;;  # 48 GB: engine sleeps during the loss phase, so 0.4 costs training nothing; generation was KV-starved at 0.25
   *) echo "unknown PROFILE=$PROFILE (kakao|a6000)"; exit 2 ;;
 esac
 
@@ -40,6 +40,6 @@ python main.py \
   --learning_rate "${LR:-5e-5}" --num_train_epochs "${EPOCHS:-1}" --save_steps "${SAVE_STEPS:-30}" \
   --max_prompt_length "$PLEN" --max_completion_length "$CLEN" \
   --vllm_gpu_memory_utilization "$VLLM_MEM" "${GC[@]}" \
-  --eval_steps "${EVAL_STEPS:-10}" --eval_num_samples "$EVAL_N" --eval_max_new_tokens "$EVAL_TOK" \
+  --eval_steps "${EVAL_STEPS:-$EVAL_EVERY}" --eval_num_samples "$EVAL_N" --eval_max_new_tokens "$EVAL_TOK" \
   --wandb_project "${WANDB_PROJECT:-sdft}" \
   "$@"

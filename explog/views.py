@@ -169,6 +169,7 @@ def show(run):
         lines.append(f"  {ds}: " + "  ".join(f"{step}:{_pct(acc)}" for step, acc in curve))
     lines.append(
         f"  summary ({run.dataset}): acc@0 {_pct(r_s['acc0'])}  best {_pct(r_s['best'])}@{r_s['best_step']}  final {_pct(r_s['final'])}@{r_s['final_step']}  Δ {_delta(r_s['delta'])}  last_step {r_s['last_step']}  final_loss {_f(r_s['final_loss'], 4)}"
+        f"  |  {_f(r_s['sec_per_step'])} s/step (incl. evals)  peak GPU mem {_f(r_s['peak_gpu_mem_gb'])} GB"
     )
     if run.results:
         lines += ["", "## standalone evaluations"]
@@ -203,7 +204,7 @@ def compare(runs):
         lines.append(f"| {mark}{k}{mark} | " + " | ".join(_f(v) for v in vals) + " |")
     lines += ["", "| metric | " + " | ".join(f"`{r.id}`" for r in runs) + " |", "|---|" + "---|" * len(runs)]
     summaries = [r.summary() for r in runs]
-    for k, fmt in (("acc0", _pct), ("best", _pct), ("best_step", _f), ("final", _pct), ("delta", _delta), ("last_step", _f), ("final_loss", lambda x: _f(x, 4))):
+    for k, fmt in (("acc0", _pct), ("best", _pct), ("best_step", _f), ("final", _pct), ("delta", _delta), ("last_step", _f), ("final_loss", lambda x: _f(x, 4)), ("sec_per_step", _f), ("peak_gpu_mem_gb", _f)):
         lines.append(f"| {k} | " + " | ".join(fmt(s[k]) for s in summaries) + " |")
     lines.append("| validity | " + " | ".join(r.validity for r in runs) + " |")
     lines.append("| git | " + " | ".join(((r.meta.get('git') or {}).get('sha') or '')[:8] + ("*" if (r.meta.get('git') or {}).get('dirty') else "") for r in runs) + " |")
