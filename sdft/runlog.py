@@ -40,6 +40,7 @@ CONFIG_FIELDS = (
     "alpha", "beta", "sync_ref_model", "ref_model_sync_steps", "ref_model_mixup_alpha",
     "generate_from_teacher", "num_loss_tokens_to_skip", "vllm_importance_sampling_correction",
     "vllm_importance_sampling_cap", "vllm_gpu_memory_utilization", "save_steps", "save_lora_adapter_only",
+    "gradient_checkpointing",
 )
 
 

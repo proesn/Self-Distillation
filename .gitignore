@@ -16,3 +16,5 @@ experiment-runs/
 checkpoints/
 # throwaway worktrees created by experiments/runs/*/launch.sh re-runs
 .rerun-worktrees/
+# nohup / launcher logs
+logs/

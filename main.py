@@ -39,6 +39,7 @@ def parse_args():
     parser.add_argument("--max_completion_length", type=int, default=1024)
     parser.add_argument("--allow_prompt_truncation", action="store_true", help="Proceed even if some teacher prompts exceed --max_prompt_length (default: abort — truncation is silent and cuts the question, not the demo)")
     parser.add_argument("--save_steps", type=int, default=100)
+    parser.add_argument("--gradient_checkpointing", action="store_true", help="Recompute activations in backward (fits long sequences on 48 GB cards; ~30% slower)")
     parser.add_argument("--save_lora_adapter_only", action="store_true", help="Checkpoints hold only adapter + tokenizer (no optimizer state; not resumable)")
     # LoRA
     parser.add_argument("--use_lora", action="store_true", help="Train LoRA adapters instead of full fine-tuning")
@@ -123,6 +124,8 @@ def main():
         num_generations=1,
         save_steps=args.save_steps,
         save_lora_adapter_only=args.save_lora_adapter_only,
+        gradient_checkpointing=args.gradient_checkpointing,
+        gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
         max_grad_norm=1,
         report_to="wandb",
         output_dir=args.output_dir,
