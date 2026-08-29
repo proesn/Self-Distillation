@@ -10,9 +10,10 @@
 # gradient checkpointing; the dataset sets prompt/completion lengths (kkp teacher prompts reach
 # 4558 tokens: 8192/8192 on kakao, 5120/4096 on a6000).
 set -euo pipefail
-# Record what was typed so the run's launch.sh can reproduce it (main.py reads these).
-export SDFT_LAUNCH_CMD="$(printf '%q ' "$0" "$@")"
-export SDFT_LAUNCHER="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# Launcher of record for the run (main.py copies it into the record). An outer script in
+# experiments/launch/ sets these first and wins; direct calls fall back to this file.
+export SDFT_LAUNCH_CMD="${SDFT_LAUNCH_CMD:-$(printf '%q ' "$0" "$@")}"
+export SDFT_LAUNCHER="${SDFT_LAUNCHER:-$(cd "$(dirname "$0")" && pwd)/$(basename "$0")}"
 cd "$(dirname "$0")/.."
 
 DATASET="${1:?dataset (tooluse|science|kkp)}"; LABEL="${2:?label}"; shift 2

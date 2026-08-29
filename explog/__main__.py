@@ -69,6 +69,25 @@ def cmd_rerun(a):
         os.execvp("bash", cmd)
 
 
+def cmd_new(a):
+    from datetime import datetime
+
+    from .records import REPO_ROOT
+
+    launch_dir = os.path.join(REPO_ROOT, "experiments", "launch")
+    template = os.path.join(launch_dir, "_template.sh")
+    date = datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(launch_dir, f"{date}_{a.label}.sh")
+    if os.path.exists(path):
+        raise SystemExit(f"exists: {path}")
+    text = open(template).read()
+    text = text.replace("__LABEL__", a.label).replace("__DATASET__", a.dataset).replace("__PROFILE__", a.profile).replace("__DATE__", date)
+    with open(path, "w") as f:
+        f.write(text)
+    os.chmod(path, 0o755)
+    print(f"created {os.path.relpath(path, REPO_ROOT)} — edit the knobs, then run it")
+
+
 def cmd_check(a):
     problems = views.check(load_runs(), running_hours=a.running_hours)
     if not problems:
@@ -113,6 +132,12 @@ def main(argv=None):
     s.add_argument("--exec", action="store_true", help="run it now")
     s.add_argument("args", nargs=argparse.REMAINDER, help="extra main.py args (after --)")
     s.set_defaults(fn=cmd_rerun)
+
+    s = sub.add_parser("new", help="scaffold experiments/launch/<date>_<label>.sh from the template")
+    s.add_argument("label")
+    s.add_argument("--dataset", default="kkp", choices=["kkp", "science", "tooluse"])
+    s.add_argument("--profile", default="a6000", choices=["a6000", "kakao"])
+    s.set_defaults(fn=cmd_new)
 
     s = sub.add_parser("check", help="hygiene report (exit 1 if problems)")
     s.add_argument("--running-hours", type=float, default=24)
