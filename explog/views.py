@@ -169,7 +169,8 @@ def show(run):
         lines.append(f"  {ds}: " + "  ".join(f"{step}:{_pct(acc)}" for step, acc in curve))
     lines.append(
         f"  summary ({run.dataset}): acc@0 {_pct(r_s['acc0'])}  best {_pct(r_s['best'])}@{r_s['best_step']}  final {_pct(r_s['final'])}@{r_s['final_step']}  Δ {_delta(r_s['delta'])}  last_step {r_s['last_step']}  final_loss {_f(r_s['final_loss'], 4)}"
-        f"  |  {_f(r_s['sec_per_step'])} s/step (incl. evals)  peak GPU mem {_f(r_s['peak_gpu_mem_gb'])} GB"
+        f"  |  {_f(r_s['sec_per_step'])} s/step (incl. evals)  peak GPU used {_f(r_s['peak_gpu_mem_gb'])} GB"
+        f"  |  per step: generate {_f(r_s['time/generate'])} s · loss {_f(r_s['time/loss'])} s/seq · vllm_sync {_f(r_s['time/vllm_sync'])} s"
     )
     if run.results:
         lines += ["", "## standalone evaluations"]

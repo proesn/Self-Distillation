@@ -19,7 +19,7 @@ from distil_trainer import DistilTrainer
 from sdft.data import DATASETS, load_train_dataset, prompt_length_report
 from sdft.eval_callback import PeriodicEvalCallback
 from sdft.models import attach_adapters, load_base_model, load_tokenizer
-from sdft.runlog import CHECKPOINTS_DIR, MetricsCallback, RunRecord, infer_run_dir, make_run_id
+from sdft.runlog import CHECKPOINTS_DIR, MetricsCallback, RunRecord, infer_run_dir, instrument_timing, make_run_id
 
 
 def parse_args():
@@ -177,6 +177,7 @@ def main():
     )
     if eval_callback is not None:
         eval_callback.trainer = trainer
+    instrument_timing(trainer)
 
     try:
         trainer.train()

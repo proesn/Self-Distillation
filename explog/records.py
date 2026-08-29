@@ -72,10 +72,13 @@ class Run:
         out["last_step"] = max(steps) if steps else (max((e["step"] for e in self.events), default=None))
         losses = [e["loss"] for e in self.events if isinstance(e.get("loss"), (int, float))]
         out["final_loss"] = losses[-1] if losses else None
-        peaks = [e["gpu_mem_peak_gb"] for e in self.events if isinstance(e.get("gpu_mem_peak_gb"), (int, float))]
+        peaks = [e["gpu_used_peak_gb"] for e in self.events if isinstance(e.get("gpu_used_peak_gb"), (int, float))]
         out["peak_gpu_mem_gb"] = max(peaks) if peaks else self.meta.get("peak_gpu_mem_gb")
         stamps = [e["time"] for e in self.events if "loss" in e and e.get("time")]
         out["sec_per_step"] = None
+        for k in ("time/generate", "time/loss", "time/vllm_sync"):
+            vals = [e[k] for e in self.events if isinstance(e.get(k), (int, float))]
+            out[k] = round(sum(vals) / len(vals), 1) if vals else None
         if len(stamps) >= 3:
             from datetime import datetime
 

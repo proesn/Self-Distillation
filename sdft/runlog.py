@@ -103,19 +103,82 @@ def gpu_name():
     return None
 
 
-def gpu_memory():
-    """Peak allocated / currently reserved GPU memory of this process (GB); vLLM colocated in-process is included."""
-    try:
+class GpuMemorySampler:
+    """Background thread sampling device-level used memory (total - free) via cudaMemGetInfo.
+
+    torch's allocator statistics are misleading with a colocated vLLM engine in sleep mode (virtual
+    reservations stay counted after the physical memory is released), so the device is asked directly.
+    `peak_and_reset()` returns the max used GB since the previous call.
+    """
+
+    def __init__(self, interval=0.5):
+        import threading
+
+        self.interval = interval
+        self._peak = 0.0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="gpu-mem-sampler", daemon=True)
+
+    def start(self):
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                return self
+        except Exception:
+            return self
+        self._thread.start()
+        return self
+
+    def _run(self):
         import torch
 
-        if torch.cuda.is_available():
-            return {
-                "gpu_mem_peak_gb": round(torch.cuda.max_memory_allocated() / 2**30, 2),
-                "gpu_mem_reserved_gb": round(torch.cuda.memory_reserved() / 2**30, 2),
-            }
-    except Exception:
-        pass
-    return {}
+        while not self._stop.is_set():
+            try:
+                free, total = torch.cuda.mem_get_info()
+                used = (total - free) / 2**30
+                with self._lock:
+                    self._peak = max(self._peak, used)
+            except Exception:
+                pass
+            self._stop.wait(self.interval)
+
+    def peak_and_reset(self):
+        with self._lock:
+            peak, self._peak = self._peak, 0.0
+        return round(peak, 2) if peak else None
+
+    def stop(self):
+        self._stop.set()
+
+
+def instrument_timing(trainer):
+    """Time the three phases of a step into trainer._metrics so they reach events.jsonl / wandb.
+
+    time/generate  — sampling + tokenising + IS forward (once per optimizer step)
+    time/loss      — one student fwd/bwd + teacher fwd (once per sequence; logged as the mean)
+    time/vllm_sync — weight push into the engine (once per optimizer step)
+    """
+    import functools
+    import time
+
+    def timed(name, fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                mode = "train" if trainer.model.training else "eval"
+                trainer._metrics[mode][name].append(time.perf_counter() - t0)
+
+        return wrapper
+
+    trainer._generate_and_score_completions = timed("time/generate", trainer._generate_and_score_completions)
+    trainer._compute_loss = timed("time/loss", trainer._compute_loss)
+    trainer._move_model_to_vllm = timed("time/vllm_sync", trainer._move_model_to_vllm)
+    return trainer
 
 
 def model_revision(model_name):
@@ -319,6 +382,8 @@ class MetricsCallback(TrainerCallback):
     def __init__(self, record):
         self.record = record
         self.path = os.path.join(record.dir, "events.jsonl")
+        self.sampler = GpuMemorySampler().start()
+        self.peak_seen = None
 
     def on_train_begin(self, args, state, control, **kwargs):
         # WandbCallback (a default callback, so it runs before this one) has initialised the run by now.
@@ -335,14 +400,17 @@ class MetricsCallback(TrainerCallback):
             return
         row = {"step": state.global_step, "epoch": state.epoch, "time": utc_now()}
         row.update({k: v for k, v in logs.items() if isinstance(v, (int, float, str)) or v is None})
-        row.update(gpu_memory())
+        peak = self.sampler.peak_and_reset()
+        if peak is not None:
+            row["gpu_used_peak_gb"] = peak
+            self.peak_seen = max(self.peak_seen or 0.0, peak)
         with open(self.path, "a") as f:
             f.write(json.dumps(row) + "\n")
 
     def on_train_end(self, args, state, control, **kwargs):
-        peak = gpu_memory().get("gpu_mem_peak_gb")
-        if peak is not None:
-            self.record.set(peak_gpu_mem_gb=peak)
+        self.sampler.stop()
+        if self.peak_seen is not None:
+            self.record.set(peak_gpu_mem_gb=self.peak_seen)
         self.record.finalize("finished")
 
 
