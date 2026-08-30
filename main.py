@@ -11,6 +11,7 @@ every step). Everything not on the CLI is fixed in the `DistilConfig(...)` liter
 
 import argparse
 import os
+import sys
 
 from transformers import set_seed
 
@@ -61,6 +62,7 @@ def parse_args():
     parser.add_argument("--idea", type=str, nargs="*", default=[], help="Brain idea slugs this run tests")
     parser.add_argument("--hypothesis", type=str, default=None, help="One line written into notes.md")
     parser.add_argument("--no_record", action="store_true", help="Do not write a run record (debug runs)")
+    parser.add_argument("--allow_shared_gpu", action="store_true", help="Start even if the GPU is already >10% occupied by another process (default: abort before loading anything)")
     parser.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.3, help="Share of the GPU reserved by the colocated vLLM engine")
     # Tokenizer / logging
     parser.add_argument("--enable_thinking", action="store_true", help="Keep Qwen3 thinking mode on (default: chat template rendered with enable_thinking=False)")
@@ -69,9 +71,26 @@ def parse_args():
     return parser.parse_args()
 
 
+def check_gpu_free(allow_shared):
+    """Abort up front when another process already holds the GPU — vLLM would fail 3 minutes later."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    free, total = torch.cuda.mem_get_info()
+    used_gb = (total - free) / 2**30
+    if used_gb > 0.1 * total / 2**30:
+        msg = f"GPU already has {used_gb:.1f} GiB in use by another process (nvidia-smi shows who)."
+        if allow_shared:
+            print("[warning] " + msg + " Continuing (--allow_shared_gpu).")
+        else:
+            raise SystemExit(msg + " Refusing to start; pass --allow_shared_gpu to override.")
+
+
 def main():
     args = parse_args()
     set_seed(args.seed)
+    check_gpu_free(args.allow_shared_gpu)
     run_id = make_run_id(args.name or args.dataset_name)
     args.output_dir = args.output_dir or os.path.join(CHECKPOINTS_DIR, run_id)
     args.run_name = args.run_name or run_id
@@ -166,29 +185,41 @@ def main():
         )
         callbacks.append(eval_callback)
 
-    trainer = DistilTrainer(
-        model=model,
-        ref_model=teacher_model,
-        args=config,
-        train_dataset=dataset,
-        processing_class=tokenizer,
-        peft_config=peft_config,
-        callbacks=callbacks or None,
-    )
-    if eval_callback is not None:
-        eval_callback.trainer = trainer
-    instrument_timing(trainer)
-
     try:
+        trainer = DistilTrainer(
+            model=model,
+            ref_model=teacher_model,
+            args=config,
+            train_dataset=dataset,
+            processing_class=tokenizer,
+            peft_config=peft_config,
+            callbacks=callbacks or None,
+        )
+        if eval_callback is not None:
+            eval_callback.trainer = trainer
+        instrument_timing(trainer)
         trainer.train()
     except KeyboardInterrupt:
         if record: record.finalize("killed", error="KeyboardInterrupt")
         raise
-    except Exception as e:
+    except BaseException as e:  # includes SystemExit from vLLM/torch startup failures
         if record: record.finalize("failed", error=repr(e))
         raise
     if record:
         record.finalize("finished")
+
+    # The colocated vLLM engine + NCCL group tear down badly at interpreter exit (segfault / non-zero
+    # status after everything is saved and logged). The record and wandb are already final, so exit here.
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":
