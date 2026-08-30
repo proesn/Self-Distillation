@@ -24,7 +24,7 @@ from datasets import Dataset  # noqa: E402
 
 from explog import brain, views  # noqa: E402
 from explog.records import load_runs, parse_notes, render_notes  # noqa: E402
-from sdft.runlog import MetricsCallback, RunRecord, infer_run_dir, make_run_id, record_eval  # noqa: E402
+from sdft.runlog import EvalRecord, MetricsCallback, RunRecord, infer_run_dir, make_run_id, record_eval  # noqa: E402
 
 
 def fake_run(label, lr, curve, status="finished", group=None):
@@ -55,11 +55,17 @@ def main():
     b = fake_run("lr1e-4", 1e-4, [(0, 0.43), (10, 0.48), (20, 0.47)], group="kkp-lr-sweep")
     c = fake_run("crash", 5e-5, [(0, 0.43)], status="failed")
 
-    # standalone eval attaches to the run via the checkpoint path
+    # standalone eval = its own record, linked to the training run via the checkpoint path
     ckpt = os.path.join(a.data["output_dir"], "checkpoint-30")
     os.makedirs(ckpt, exist_ok=True)
     assert infer_run_dir(ckpt) == a.dir, (infer_run_dir(ckpt), a.dir)
-    record_eval(infer_run_dir(ckpt), "science", {"accuracy": 0.61, "num_total": 507}, settings={"temperature": 0.0}, checkpoint=ckpt)
+    ev = EvalRecord.start("eval-science-lr5e-5-s30", "science", "Qwen/Qwen3-4B", adapter_path=ckpt, settings={"temperature": 0.0}, num_samples=507)
+    assert ev.data["target"]["run"] == a.run_id and ev.data["target"]["checkpoint_step"] == 30, ev.data["target"]
+    ev.finish({"accuracy": 0.61, "num_total": 507}, per_sample=[1, 0, 1], responses_path="/tmp/x.json")
+    base = EvalRecord.start("eval-kkp-base", "kkp", "Qwen/Qwen3-4B", settings={"temperature": 0.0}, num_samples=300)
+    assert base.data["target"]["run"] is None
+    base.finish({"accuracy": 0.57, "parse_rate": 0.9, "num_total": 300})
+    record_eval(a.dir, "tooluse", {"accuracy": 0.3, "num_total": 97}, checkpoint=ckpt)  # legacy pointer without an eval record still works
 
     # judgement
     notes_path = os.path.join(b.dir, "notes.md")
@@ -71,12 +77,13 @@ def main():
     open(os.path.join(a.dir, "notes.md"), "w").write(render_notes(f))
 
     runs = load_runs()
-    assert [r.id for r in runs][0].endswith("crash") or True
-    assert len(runs) == 3, len(runs)
+    assert len(runs) == 5, [r.id for r in runs]
+    evals = [r for r in runs if r.kind == "eval"]
+    assert len(evals) == 2 and {e.summary()["final"] for e in evals} == {0.61, 0.57}, [(e.id, e.summary()) for e in evals]
     ra = next(r for r in runs if r.id == a.run_id)
     s = ra.summary()
     assert s["acc0"] == 0.43 and s["best"] == 0.55 and s["best_step"] == 20 and s["final"] == 0.53 and abs(s["delta"] - 0.10) < 1e-9, s
-    assert ra.standalone()["science"]["accuracy"] == 0.61
+    assert ra.standalone()["science"]["accuracy"] == 0.61 and ra.results[0]["eval_run"] == ev.run_id, ra.results
     assert next(r for r in runs if r.id == c.run_id).status == "failed"
     assert os.path.exists(os.path.join(a.dir, "code.patch"))
     launch = open(os.path.join(a.dir, "launch.sh")).read()
@@ -88,12 +95,12 @@ def main():
 
     index_path, n = views.write_index(path=os.path.join(TMP, "INDEX.md"), runs=runs)
     index = open(index_path).read()
-    assert "~~`" in index and "kkp-lr-sweep" in index and "Standalone evaluations" in index and "55.0 (20)" in index, index
+    assert "~~`" in index and "kkp-lr-sweep" in index and "Evaluations (standalone)" in index and "(base)" in index and "55.0 (20)" in index, index
     print(index)
     print(views.show(ra))
     print(views.compare([ra, next(r for r in runs if r.id == b.run_id)]))
     problems = views.check(runs)
-    assert not problems, problems  # a judged valid, b judged invalid with reason, c failed → nothing to flag
+    assert all("pending" in msg and rid in (ev.run_id, base.run_id) for rid, msg in problems), problems  # only the unjudged evals are flagged
     print("check: ok")
 
     brain_dir = os.path.join(TMP, "brain-experiments")

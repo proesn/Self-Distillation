@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
-# Standalone evaluation of a run's checkpoint; the result is appended to that run's results.json.
+# Standalone evaluation as a record of its own (experiments/runs/<date>_<label>/, kind: eval),
+# linked to the training run it targets.
 #
-#   scripts/eval.sh <tooluse|science|kkp> <run_id> [checkpoint-step] [extra eval args...]
+#   scripts/eval.sh <tooluse|science|kkp> <run_id> [checkpoint-step] [extra eval args...]   # a training run's checkpoint
+#   scripts/eval.sh <tooluse|science|kkp> base [extra eval args...]                          # the base model (MODEL env, default Qwen/Qwen3-4B)
 #
 #   Defaults: latest checkpoint under checkpoints/<run_id>/, base model from the run record,
-#   greedy decoding, seed 42. Cross-dataset (forgetting) evals: pass a dataset other than the
-#   one the run trained on — it lands in the same results.json and in the INDEX's standalone table.
-set -euo pipefail
+#   greedy decoding, seed 42, full eval set. Responses are written next to the checkpoint
+#   (untracked); metrics + per-sample scores go into the record (tracked).
+#   Label: LABEL=<name> env, default eval-<dataset>-<run_id or base>[-s<step>].
+set -uo pipefail
 cd "$(dirname "$0")/.."
+export SDFT_LAUNCH_CMD="${SDFT_LAUNCH_CMD:-$(printf '%q ' "$0" "$@")}"
+export SDFT_LAUNCHER="${SDFT_LAUNCHER:-$(cd "$(dirname "$0")" && pwd)/$(basename "$0")}"
 
-DATASET="${1:?dataset}"; RUN_ID="${2:?run_id}"; shift 2
-RUN_DIR="experiments/runs/$RUN_ID"
-[ -f "$RUN_DIR/run.json" ] || { echo "no run record at $RUN_DIR"; exit 2; }
-
-if [[ "${1:-}" =~ ^[0-9]+$ ]]; then STEP="$1"; shift; CKPT="checkpoints/$RUN_ID/checkpoint-$STEP"
-else CKPT="$(ls -d checkpoints/"$RUN_ID"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)"; fi
-[ -d "$CKPT" ] || { echo "no checkpoint found for $RUN_ID"; exit 2; }
-
-MODEL="$(python -c "import json;print(json.load(open('$RUN_DIR/run.json'))['model']['name'])")"
+DATASET="${1:?dataset}"; TARGET="${2:?run_id or 'base'}"; shift 2
 
 case "$DATASET" in
   kkp)     EXTRA=(--max_new_tokens 8192 --max_model_len 16384) ;;
@@ -26,6 +23,21 @@ case "$DATASET" in
   *) echo "unknown dataset $DATASET"; exit 2 ;;
 esac
 
-python "eval_$DATASET.py" --model_path "$MODEL" --adapter_path "$CKPT" --run_dir "$RUN_DIR" \
-  --output_dir "$CKPT/eval_$DATASET" --seed 42 --temperature 0.0 "${EXTRA[@]}" "$@"
+if [ "$TARGET" = base ]; then
+  MODEL="${MODEL:-Qwen/Qwen3-4B}"
+  LABEL="${LABEL:-eval-$DATASET-base}"
+  OUT="eval_results/$LABEL"
+  python "eval_$DATASET.py" --model_path "$MODEL" --name "$LABEL" --output_dir "$OUT" \
+    --seed 42 --temperature 0.0 "${EXTRA[@]}" "$@"
+else
+  RUN_DIR="experiments/runs/$TARGET"
+  [ -f "$RUN_DIR/run.json" ] || { echo "no run record at $RUN_DIR"; exit 2; }
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then STEP="$1"; shift; CKPT="checkpoints/$TARGET/checkpoint-$STEP"
+  else CKPT="$(ls -d checkpoints/"$TARGET"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)"; STEP="${CKPT##*-}"; fi
+  [ -d "$CKPT" ] || { echo "no checkpoint found for $TARGET"; exit 2; }
+  MODEL="$(python -c "import json;print(json.load(open('$RUN_DIR/run.json'))['model']['name'])")"
+  LABEL="${LABEL:-eval-$DATASET-$TARGET-s$STEP}"
+  python "eval_$DATASET.py" --model_path "$MODEL" --adapter_path "$CKPT" --run_dir "$RUN_DIR" --name "$LABEL" \
+    --output_dir "$CKPT/eval_$DATASET" --seed 42 --temperature 0.0 "${EXTRA[@]}" "$@"
+fi
 python -m explog table

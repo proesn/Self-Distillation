@@ -26,7 +26,9 @@ def parse_args():
                         help="Seed for vLLM sampling")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.8)
     parser.add_argument("--max_model_len", type=int, default=4096)
-    parser.add_argument("--run_dir", type=str, default=None, help="Run record folder to append results to (default: inferred from a checkpoints/<run_id>/ path)")
+    parser.add_argument("--run_dir", type=str, default=None, help="Training run this eval targets (default: inferred from a checkpoints/<run_id>/ path)")
+    parser.add_argument("--name", type=str, default=None, help="Label of the eval record: run id = YYYY-MM-DD_<label> (default: eval-<dataset>-<target|base>)")
+    parser.add_argument("--no_record", action="store_true", help="Do not write an eval record")
     return parser.parse_args()
 
 
@@ -150,6 +152,18 @@ def evaluate_correctness(responses, answers):
 
 def main():
     args = parse_args()
+    rec = None
+    if not args.no_record:
+        from sdft.runlog import EvalRecord, infer_run_dir
+
+        target = os.path.basename(args.run_dir) if args.run_dir else None
+        if target is None:
+            d = infer_run_dir(args.adapter_path, args.model_path)
+            target = os.path.basename(d) if d else None
+        rec = EvalRecord.start(
+            args.name or f"eval-science-{target or 'base'}", "science", args.model_path, adapter_path=args.adapter_path, target_run=target,
+            settings={"max_new_tokens": args.max_new_tokens, "temperature": args.temperature, "seed": args.seed, "max_model_len": args.max_model_len},
+        )
 
     # Load model and data
     llm, tokenizer = load_model_and_tokenizer(
@@ -207,14 +221,6 @@ def main():
         }
     }
 
-    from sdft.runlog import infer_run_dir, record_eval
-
-    record_eval(
-        args.run_dir or infer_run_dir(args.adapter_path, args.model_path), "science",
-        {"accuracy": float(accuracy), "num_total": len(scores)},
-        settings=results_to_save["config"], checkpoint=args.adapter_path or args.model_path,
-    )
-
     output_path = os.path.join(output_dir, "eval_results.json")
     with open(output_path, "w") as f:
         json.dump(results_to_save, f, indent=2)
@@ -233,6 +239,9 @@ def main():
             for i in range(len(responses))
         ], f, indent=2)
     print(f"Saved responses to {responses_path}")
+
+    if rec is not None:
+        rec.finish({"accuracy": float(accuracy), "num_total": len(scores)}, per_sample=[int(s) for s in scores], responses_path=os.path.abspath(responses_path))
 
 
 if __name__ == "__main__":

@@ -82,6 +82,26 @@ def _group_rows(runs):
     return header + "\n".join(rows) + "\n"
 
 
+def _eval_rows(evals):
+    header = (
+        "| eval | date | st | dataset | target | n | accuracy | parse | validity | verdict |\n"
+        "|---|---|---|---|---|---|---|---|---|---|\n"
+    )
+    rows = []
+    for r in evals:
+        t = r.target
+        target = f"`{t.get('run')}` @ {t.get('checkpoint_step')}" if t.get("run") else f"{_short_model(t.get('model'))} (base)"
+        mt = r.summary().get("metrics") or {}
+        verdict = (r.notes.get("verdict") or "").replace("|", "/")
+        if r.validity == "invalid" and r.notes.get("reason"):
+            verdict = f"INVALID: {r.notes['reason']} — {verdict}".rstrip(" —")
+        rows.append(
+            f"| {_run_cell(r)} | {(r.meta.get('started') or '')[:10]} | {STATUS_GLYPH.get(r.status, '?')} | {r.dataset} | {target} "
+            f"| {mt.get('num_total', '–')} | {_pct(mt.get('accuracy'))} | {_pct(mt.get('parse_rate')) if 'parse_rate' in mt else '–'} | {r.validity} | {verdict} |"
+        )
+    return header + "\n".join(rows) + "\n"
+
+
 def render_index(runs):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     out = [
@@ -100,15 +120,19 @@ def render_index(runs):
     out += ["## Latest", ""]
     for r in latest:
         s = r.summary()
-        out.append(
-            f"- {_run_cell(r)} — {r.dataset}, {STATUS_GLYPH.get(r.status, '?')} {r.status}, "
-            f"final {_pct(s['final'])} (Δ {_delta(s['delta'])}), {r.validity}"
-            + (f" — {r.notes['verdict']}" if r.notes.get("verdict") else "")
-        )
+        if r.kind == "eval":
+            line = f"- {_run_cell(r)} — eval · {r.dataset}, {STATUS_GLYPH.get(r.status, '?')} {r.status}, accuracy {_pct(s['final'])}, {r.validity}"
+        else:
+            line = f"- {_run_cell(r)} — {r.dataset}, {STATUS_GLYPH.get(r.status, '?')} {r.status}, final {_pct(s['final'])} (Δ {_delta(s['delta'])}), {r.validity}"
+        if r.notes.get("verdict"):
+            line += f" — {r.notes['verdict']}"
+        out.append(line)
     out.append("")
 
+    trains = [r for r in runs if r.kind == "train"]
+    evals = [r for r in runs if r.kind == "eval"]
     by_ds = defaultdict(list)
-    for r in runs:
+    for r in trains:
         by_ds[r.dataset].append(r)
     for ds in sorted(by_ds):
         out += [f"## {ds}", "", _group_rows(by_ds[ds])]
@@ -120,11 +144,14 @@ def render_index(runs):
             if len(groups[g]) > 1:
                 out += [f"### sweep `{g}`", "", _group_rows(sorted(groups[g], key=lambda r: r.cfg.get("learning_rate") or 0))]
 
-    # standalone evaluations (forgetting / cross-dataset), if any run has them
-    with_results = [r for r in runs if r.results]
+    if evals:
+        out += ["## Evaluations (standalone)", "", _eval_rows(evals)]
+
+    # per training run: its standalone evals by dataset (forgetting / cross-dataset), from results.json pointers
+    with_results = [r for r in trains if r.results]
     if with_results:
         datasets = sorted({res["dataset"] for r in with_results for res in r.results})
-        out += ["## Standalone evaluations (results.json)", "", "| run | " + " | ".join(datasets) + " |", "|---|" + "---|" * len(datasets)]
+        out += ["## Training runs × standalone evals", "", "| run | " + " | ".join(datasets) + " |", "|---|" + "---|" * len(datasets)]
         for r in with_results:
             st = r.standalone()
             out.append("| " + _run_cell(r) + " | " + " | ".join(_pct(st.get(d, {}).get("accuracy")) for d in datasets) + " |")
@@ -145,8 +172,15 @@ def show(run):
     r_s = run.summary()
     m = run.meta
     lines = [
-        f"# {run.id}",
+        f"# {run.id}   ({run.kind})",
         f"name: {m.get('name')}   group: {m.get('group')}   tags: {m.get('tags')}   idea: {m.get('idea')}",
+    ]
+    if run.kind == "eval":
+        t = run.target
+        lines += [f"target: run={t.get('run')} step={t.get('checkpoint_step')} model={t.get('model')} adapter={t.get('adapter_path')}",
+                  f"dataset: {run.dataset} n={(m.get('data') or {}).get('num_samples')}   settings: {m.get('settings')}",
+                  f"metrics: {m.get('metrics')}"]
+    lines += [
         f"status: {run.status}   started: {m.get('started')}   ended: {m.get('ended')}   host: {m.get('host')}   gpu: {m.get('gpu')}",
         f"model: {run.model} @ {(m.get('model') or {}).get('revision')}",
         f"data: {run.dataset} rows={(m.get('data') or {}).get('rows')} fp={(m.get('data') or {}).get('fingerprint')}",
@@ -225,12 +259,15 @@ def check(runs, running_hours=24):
             except ValueError:
                 pass
         if r.status == "finished":
-            if not r.eval_curve() and not r.results:
+            if r.kind == "eval" and not (r.meta.get("metrics") or r.results):
+                problems.append((r.id, "eval finished without metrics"))
+            if r.kind == "train" and not r.eval_curve() and not r.results:
                 problems.append((r.id, "finished with no eval curve and no results.json"))
             if r.validity == "pending":
                 problems.append((r.id, "finished but validity still pending — judge it (explog note)"))
         if r.validity == "invalid" and not r.notes.get("reason"):
             problems.append((r.id, "invalid without a reason"))
-        if (m.get("git") or {}).get("dirty") and not os.path.exists(os.path.join(r.dir, "code.patch")):
-            problems.append((r.id, "dirty tree but no code.patch"))
+        g = m.get("git") or {}
+        if g.get("dirty_tracked", g.get("dirty")) and not os.path.exists(os.path.join(r.dir, "code.patch")):
+            problems.append((r.id, "tracked files were modified at launch but code.patch is missing"))
     return problems

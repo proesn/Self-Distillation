@@ -74,10 +74,13 @@ def _git(*args):
 def git_state():
     porcelain = _git("status", "--porcelain")
     untracked = [line[3:] for line in porcelain.splitlines() if line.startswith("??")]
+    modified = [line[3:] for line in porcelain.splitlines() if line.strip() and not line.startswith("??")]
     return {
         "sha": _git("rev-parse", "HEAD").strip() or None,
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD").strip() or None,
         "dirty": bool(porcelain.strip()),
+        "dirty_tracked": bool(modified),  # tracked files changed → code.patch is non-empty and matters
+        "modified": modified,
         "untracked": untracked,
     }
 
@@ -316,6 +319,7 @@ class RunRecord:
         rec.data = {
             "schema_version": SCHEMA_VERSION,
             "id": run_id,
+            "kind": "train",
             "name": getattr(args, "name", None) or run_id,
             "group": group,
             "tags": list(tags),
@@ -414,7 +418,85 @@ class MetricsCallback(TrainerCallback):
         self.record.finalize("finished")
 
 
-# ---------- results.json (standalone evaluations) ----------
+# ---------- standalone evaluations: records of their own ----------
+
+def _checkpoint_step(path):
+    m = re.search(r"checkpoint-(\d+)", path or "")
+    return int(m.group(1)) if m else None
+
+
+class EvalRecord(RunRecord):
+    """One standalone evaluation = one record folder (`kind: eval`), linked to the training run it targets.
+
+        experiments/runs/<YYYY-MM-DD_label>/
+            run.json      kind eval · target {run, model, adapter_path, checkpoint_step} · dataset · settings · git · launch · status
+            results.json  [{dataset, metrics, per_sample, responses}]   (responses stay outside git; the path is recorded)
+            launch.sh / launcher.sh / code.patch / notes.md            as for training runs
+    On finish, a pointer entry {dataset, metrics, eval_run} is appended to the target training run's results.json.
+    """
+
+    @classmethod
+    def start(cls, label, dataset, model, adapter_path=None, target_run=None, settings=None, num_samples=None):
+        if target_run is None:
+            d = infer_run_dir(adapter_path, model)
+            target_run = os.path.basename(d) if d else None
+        rec = cls(make_run_id(label))
+        os.makedirs(rec.dir, exist_ok=True)
+        git = git_state()
+        with open(os.path.join(rec.dir, "code.patch"), "w") as f:
+            f.write(_git("diff", "HEAD"))
+        launch = launch_info()
+        write_launch_script(rec.dir, launch, git)
+        if launch["launcher"] and os.path.exists(launch["launcher"]):
+            shutil.copyfile(launch["launcher"], os.path.join(rec.dir, "launcher.sh"))
+        rec.data = {
+            "schema_version": SCHEMA_VERSION,
+            "id": rec.run_id,
+            "kind": "eval",
+            "name": label,
+            "group": None,
+            "tags": [],
+            "idea": [],
+            "status": "running",
+            "started": utc_now(),
+            "ended": None,
+            "host": socket.gethostname(),
+            "gpu": gpu_name(),
+            "git": git,
+            "cmd": shlex.join(sys.argv),
+            "launch": launch,
+            "target": {"run": target_run, "model": model, "adapter_path": adapter_path, "checkpoint_step": _checkpoint_step(adapter_path)},
+            "data": {"name": dataset, "num_samples": num_samples},
+            "settings": settings or {},
+            "env": package_versions(),
+            "metrics": None,
+            "error": None,
+        }
+        rec.save()
+        atexit.register(rec._atexit)
+        rec.write_notes_skeleton()
+        print(f"[runlog] eval record {rec.dir} (target run: {target_run or 'none — base model'})")
+        return rec
+
+    def finish(self, metrics, per_sample=None, responses_path=None):
+        entry = {
+            "dataset": self.data["data"]["name"],
+            "time": utc_now(),
+            "checkpoint": self.data["target"]["adapter_path"] or self.data["target"]["model"],
+            "metrics": metrics,
+            "settings": self.data["settings"],
+            "per_sample": per_sample,
+            "responses": responses_path,
+        }
+        _dump(os.path.join(self.dir, "results.json"), [entry])
+        self.data["metrics"] = metrics
+        self.finalize("finished")
+        target = self.data["target"]["run"]
+        if target:
+            record_eval(os.path.join(RUNS_DIR, target), entry["dataset"], metrics, settings=entry["settings"], checkpoint=entry["checkpoint"], eval_run=self.run_id)
+
+
+# ---------- results.json pointers on the training run ----------
 
 def infer_run_dir(*paths):
     """Find the run a checkpoint belongs to: the segment after `checkpoints/` is the run id."""
@@ -431,8 +513,8 @@ def infer_run_dir(*paths):
     return None
 
 
-def record_eval(run_dir, dataset, metrics, settings=None, checkpoint=None):
-    """Append one evaluation to <run_dir>/results.json. Returns the entry, or None if no run_dir."""
+def record_eval(run_dir, dataset, metrics, settings=None, checkpoint=None, eval_run=None):
+    """Append one evaluation to <run_dir>/results.json (a pointer when it came from an EvalRecord). Returns the entry, or None if no run_dir."""
     if not run_dir:
         return None
     path = os.path.join(run_dir, "results.json")
@@ -446,6 +528,7 @@ def record_eval(run_dir, dataset, metrics, settings=None, checkpoint=None):
         "checkpoint": checkpoint,
         "metrics": metrics,
         "settings": settings or {},
+        "eval_run": eval_run,
     }
     entries.append(entry)
     _dump(path, entries)
