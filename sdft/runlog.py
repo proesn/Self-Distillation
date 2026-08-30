@@ -203,7 +203,12 @@ def model_revision(model_name):
 
 
 def dataset_fingerprint(dataset):
-    return {"rows": len(dataset), "fingerprint": getattr(dataset, "_fingerprint", None)}
+    """Row count + sha256 over 64 evenly spaced rows — identifies the data content, not the loader code."""
+    n = len(dataset)
+    h = hashlib.sha256()
+    for i in sorted({int(k * (n - 1) / 63) for k in range(64)}) if n else []:
+        h.update(json.dumps(dataset[i], sort_keys=True, default=str).encode())
+    return {"rows": n, "fingerprint": f"sha256:{h.hexdigest()[:16]}" if n else None}
 
 
 # Environment that shapes a run and is safe to record (never tokens/keys).

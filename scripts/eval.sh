@@ -4,6 +4,7 @@
 #
 #   scripts/eval.sh <tooluse|science|kkp> <run_id> [checkpoint-step] [extra eval args...]   # a training run's checkpoint
 #   scripts/eval.sh <tooluse|science|kkp> base [extra eval args...]                          # the base model (MODEL env, default Qwen/Qwen3-4B)
+#   scripts/eval.sh <tooluse|science|kkp> teacher [n] [extra eval args...]                   # teacher view: base + teacher prompt vs base + plain prompt on n (300) training items
 #
 #   Defaults: latest checkpoint under checkpoints/<run_id>/, base model from the run record,
 #   greedy decoding, seed 42, full eval set. Responses are written next to the checkpoint
@@ -18,7 +19,7 @@ DATASET="${1:?dataset}"; TARGET="${2:?run_id or 'base'}"; shift 2
 
 case "$DATASET" in
   kkp)     EXTRA=(--max_new_tokens 8192 --max_model_len 16384) ;;
-  science) EXTRA=(--max_new_tokens 2048 --max_model_len 4096) ;;
+  science) EXTRA=(--max_new_tokens 2048 --max_model_len 8192) ;;
   tooluse) EXTRA=(--max_new_tokens 1024) ;;
   *) echo "unknown dataset $DATASET"; exit 2 ;;
 esac
@@ -28,6 +29,13 @@ if [ "$TARGET" = base ]; then
   LABEL="${LABEL:-eval-$DATASET-base}"
   OUT="eval_results/$LABEL"
   python "eval_$DATASET.py" --model_path "$MODEL" --name "$LABEL" --output_dir "$OUT" \
+    --seed 42 --temperature 0.0 "${EXTRA[@]}" "$@"
+elif [ "$TARGET" = teacher ]; then
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then N="$1"; shift; else N=300; fi
+  MODEL="${MODEL:-Qwen/Qwen3-4B}"
+  LABEL="${LABEL:-eval-$DATASET-teacher-view}"
+  OUT="eval_results/$LABEL"
+  python "eval_$DATASET.py" --model_path "$MODEL" --name "$LABEL" --output_dir "$OUT" --teacher_view --num_samples "$N" \
     --seed 42 --temperature 0.0 "${EXTRA[@]}" "$@"
 else
   RUN_DIR="experiments/runs/$TARGET"

@@ -7,11 +7,16 @@ The trainer consumes exactly two columns, both chat-message lists:
 
 The demonstration never becomes a target token sequence; it only conditions the teacher.
 Adding a task = one loader returning these two columns, registered in `LOADERS`.
+
+`load_teacher_view` returns the same two views for a training subset together with the gold
+answer, so an eval script can score the base model under the teacher prompt.
 """
 
 import gzip
 import json
 import os
+import random
+import re
 from string import Template
 
 from datasets import Dataset, load_from_disk
@@ -46,52 +51,66 @@ Now answer with a response of your own. Think step by step, then finish with the
 """)
 
 
+def format_tooluse(example):
+    return {
+        "prompt": [{"role": "user", "content": example["prompt"]}],
+        "teacher_prompt": [
+            {
+                "role": "user",
+                "content": TEACHER_TEMPLATE.substitute(
+                    orig_content=example["prompt"],
+                    output_text="\n".join(example["golden_response"]),
+                ),
+            }
+        ],
+    }
+
+
+def gold_tooluse(example):
+    """`golden_answer` as eval_tooluse.evaluate_correctness expects it: [{Action, Action_Input}]."""
+    return example["golden_answer"]
+
+
 def load_tooluse_dataset(seed=42) -> Dataset:
     """ReAct-style tool calls. Raw columns used: `prompt` (str), `golden_response` (list[str])."""
     train_dir = _path("tooluse_data", "train_data")
     dataset = load_from_disk(train_dir)
-
-    def format_example(example):
-        return {
-            "prompt": [{"role": "user", "content": example["prompt"]}],
-            "teacher_prompt": [
-                {
-                    "role": "user",
-                    "content": TEACHER_TEMPLATE.substitute(
-                        orig_content=example["prompt"],
-                        output_text="\n".join(example["golden_response"]),
-                    ),
-                }
-            ],
-        }
-
-    dataset = dataset.map(format_example, remove_columns=dataset.column_names)
+    dataset = dataset.map(format_tooluse, remove_columns=dataset.column_names)
     dataset = dataset.shuffle(seed=seed)
     print(f"Loaded {len(dataset)} tooluse training examples from {train_dir}")
     return dataset
+
+
+def format_science(example):
+    return {
+        "prompt": example["messages"],
+        "teacher_prompt": [
+            example["messages"][0],
+            {
+                "role": "user",
+                "content": TEACHER_TEMPLATE.substitute(
+                    orig_content=example["messages"][1]["content"],
+                    output_text=example["output_text"],
+                ),
+            },
+        ],
+    }
+
+
+_SCIENCE_ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.S)
+
+
+def gold_science(example):
+    """The option letter inside the demonstration's <answer> tag (the training split has no answer column)."""
+    m = _SCIENCE_ANSWER_RE.search(example["output_text"])
+    return m.group(1).strip() if m else ""
 
 
 def load_science_dataset(seed=42) -> Dataset:
     """Four-option science MCQ with <reasoning>/<answer> format. Raw columns: `messages` ([system, user]), `output_text`."""
     train_dir = _path("science_data", "train_data")
     dataset = load_from_disk(train_dir)
-
-    def format_example(example):
-        return {
-            "prompt": example["messages"],
-            "teacher_prompt": [
-                example["messages"][0],
-                {
-                    "role": "user",
-                    "content": TEACHER_TEMPLATE.substitute(
-                        orig_content=example["messages"][1]["content"],
-                        output_text=example["output_text"],
-                    ),
-                },
-            ],
-        }
-
-    dataset = dataset.map(format_example, remove_columns=dataset.column_names)
+    dataset = dataset.map(format_science, remove_columns=dataset.column_names)
     dataset = dataset.shuffle(seed=seed)
     print(f"Loaded {len(dataset)} science training examples from {train_dir}")
     return dataset
@@ -120,31 +139,36 @@ def _read_kkp_rows():
     )
 
 
+def format_kkp(example):
+    messages = list(example["messages"])
+    prompt_messages = [m for m in messages if m["role"] != "assistant"]
+    assistant_messages = [m for m in messages if m["role"] == "assistant"]
+    if not assistant_messages:
+        raise ValueError("KKP row must contain an assistant message")
+    return {
+        "prompt": prompt_messages,
+        "teacher_prompt": [
+            prompt_messages[0],
+            {
+                "role": "user",
+                "content": KKP_TEACHER_TEMPLATE.substitute(
+                    orig_content=prompt_messages[-1]["content"],
+                    output_text=assistant_messages[-1]["content"],
+                ),
+            },
+        ],
+    }
+
+
+def gold_kkp(example):
+    """The demonstration itself; eval_kkp.extract_assignment reads the assignment after its last **Solution:**."""
+    return [m for m in example["messages"] if m["role"] == "assistant"][-1]["content"]
+
+
 def load_kkp_dataset(seed=42) -> Dataset:
     """Knights-and-knaves puzzles. The assistant turn of each row is the demonstration."""
     dataset = Dataset.from_list(_read_kkp_rows())
-
-    def format_example(example):
-        messages = list(example["messages"])
-        prompt_messages = [m for m in messages if m["role"] != "assistant"]
-        assistant_messages = [m for m in messages if m["role"] == "assistant"]
-        if not assistant_messages:
-            raise ValueError("KKP row must contain an assistant message")
-        return {
-            "prompt": prompt_messages,
-            "teacher_prompt": [
-                prompt_messages[0],
-                {
-                    "role": "user",
-                    "content": KKP_TEACHER_TEMPLATE.substitute(
-                        orig_content=prompt_messages[-1]["content"],
-                        output_text=assistant_messages[-1]["content"],
-                    ),
-                },
-            ],
-        }
-
-    dataset = dataset.map(format_example, remove_columns=dataset.column_names)
+    dataset = dataset.map(format_kkp, remove_columns=dataset.column_names)
     dataset = dataset.shuffle(seed=seed)
     print(f"Loaded {len(dataset)} KKP training examples")
     return dataset
@@ -156,6 +180,39 @@ LOADERS = {
     "kkp": load_kkp_dataset,
 }
 DATASETS = tuple(LOADERS)
+
+FORMATTERS = {"tooluse": format_tooluse, "science": format_science, "kkp": format_kkp}
+GOLD = {"tooluse": gold_tooluse, "science": gold_science, "kkp": gold_kkp}
+
+
+def _raw_train_rows(name):
+    if name == "kkp":
+        return _read_kkp_rows()
+    if name in ("tooluse", "science"):
+        return load_from_disk(_path(f"{name}_data", "train_data"))
+    raise ValueError(f"unknown dataset {name!r}; choose from {DATASETS}")
+
+
+def load_teacher_view(name, num_samples=300, seed=42):
+    """A seeded subset of the *training* split as [{prompt, teacher_prompt, gold}].
+
+    `prompt` / `teacher_prompt` are built by the same formatter the trainer's dataset uses, so
+    `teacher_prompt` is exactly what the teacher sees during training (demonstration included);
+    `gold` is the answer in the shape the dataset's eval script scores against. Teacher prompts
+    exist only for training rows — the eval split carries no demonstration.
+    """
+    rows = _raw_train_rows(name)
+    n = len(rows)
+    idx = list(range(n))
+    if num_samples is not None and 0 < num_samples < n:
+        idx = sorted(random.Random(seed).sample(idx, num_samples))
+    fmt, gold = FORMATTERS[name], GOLD[name]
+    out = []
+    for i in idx:
+        ex = rows[i]
+        out.append({**fmt(ex), "gold": gold(ex)})
+    print(f"Teacher view: {len(out)} of {n} {name} training rows (seed {seed})")
+    return out
 
 
 def load_train_dataset(name, seed=42) -> Dataset:

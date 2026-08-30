@@ -65,6 +65,48 @@ def main():
     base = EvalRecord.start("eval-kkp-base", "kkp", "Qwen/Qwen3-4B", settings={"temperature": 0.0}, num_samples=300)
     assert base.data["target"]["run"] is None
     base.finish({"accuracy": 0.57, "parse_rate": 0.9, "num_total": 300})
+    tv = EvalRecord.start("eval-science-teacher-view", "science", "Qwen/Qwen3-4B", settings={"view": "teacher", "split": "train"}, num_samples=300)
+    tv.finish({"teacher_accuracy": 0.9, "student_accuracy": 0.4, "gap": 0.5, "num_total": 300, "teacher_only": 150, "student_only": 0, "both": 120},
+              per_sample={"teacher": [1, 1], "student": [0, 1]})
+
+    # teacher view: the helper with a fake generator, then the real loaders on the data in the repo
+    from sdft.teacher_view import run_teacher_view
+
+    tv_rows = [
+        {"prompt": [{"role": "user", "content": f"q{i}"}],
+         "teacher_prompt": [{"role": "user", "content": f"q{i}\n\nThis is an example for a response to the question:\n{i % 2}\n\nNow answer"}],
+         "gold": str(i % 2)}
+        for i in range(4)
+    ]
+    fake_generate = lambda prompts: [p[-1]["content"].split("question:\n")[1][0] if "This is an example" in p[-1]["content"] else "0" for p in prompts]
+    tv_metrics = run_teacher_view(
+        "science", tv_rows, generate=fake_generate,
+        score=lambda responses, golds: ([int(r == g) for r, g in zip(responses, golds)], {"parse_rate": 1.0}),
+        output_dir=os.path.join(TMP, "tv"),
+    )
+    assert (tv_metrics["teacher_accuracy"], tv_metrics["student_accuracy"], tv_metrics["gap"]) == (1.0, 0.5, 0.5), tv_metrics
+    assert (tv_metrics["teacher_only"], tv_metrics["student_only"], tv_metrics["both"], tv_metrics["teacher_parse_rate"]) == (2, 0, 2, 1.0), tv_metrics
+    assert os.path.exists(os.path.join(TMP, "tv", "teacher_view_responses.json")) and os.path.exists(os.path.join(TMP, "tv", "teacher_view_results.json"))
+
+    from sdft.data import DATA_ROOT, load_teacher_view
+
+    if os.path.isdir(os.path.join(DATA_ROOT, "science_data", "train_data")):
+        for name in ("science", "tooluse", "kkp"):
+            rows = load_teacher_view(name, 3, seed=1)
+            assert len(rows) == 3 and all(set(r) == {"prompt", "teacher_prompt", "gold"} for r in rows), name
+            for r in rows:
+                demo = r["teacher_prompt"][-1]["content"]
+                assert "This is an example for a response" in demo and r["prompt"][-1]["content"] in demo, name
+                g = r["gold"]
+                if name == "science":
+                    needle = f"<answer>\n{g}\n</answer>"
+                elif name == "tooluse":
+                    needle = g[0]["Action"] if g else ""
+                else:
+                    needle = "**Solution:**"
+                assert needle and needle in demo, (name, needle)
+            assert [r["gold"] for r in load_teacher_view(name, 3, seed=1)] == [r["gold"] for r in rows], "subset must be seeded"
+        print("teacher view loaders: ok")
     record_eval(a.dir, "tooluse", {"accuracy": 0.3, "num_total": 97}, checkpoint=ckpt)  # legacy pointer without an eval record still works
 
     # judgement
@@ -77,9 +119,9 @@ def main():
     open(os.path.join(a.dir, "notes.md"), "w").write(render_notes(f))
 
     runs = load_runs()
-    assert len(runs) == 5, [r.id for r in runs]
+    assert len(runs) == 6, [r.id for r in runs]
     evals = [r for r in runs if r.kind == "eval"]
-    assert len(evals) == 2 and {e.summary()["final"] for e in evals} == {0.61, 0.57}, [(e.id, e.summary()) for e in evals]
+    assert len(evals) == 3 and {e.summary()["final"] for e in evals} == {0.61, 0.57, 0.9}, [(e.id, e.summary()) for e in evals]
     ra = next(r for r in runs if r.id == a.run_id)
     s = ra.summary()
     assert s["acc0"] == 0.43 and s["best"] == 0.55 and s["best_step"] == 20 and s["final"] == 0.53 and abs(s["delta"] - 0.10) < 1e-9, s
@@ -96,11 +138,12 @@ def main():
     index_path, n = views.write_index(path=os.path.join(TMP, "INDEX.md"), runs=runs)
     index = open(index_path).read()
     assert "~~`" in index and "kkp-lr-sweep" in index and "Evaluations (standalone)" in index and "(base)" in index and "55.0 (20)" in index, index
+    assert "T 90.0 / S 40.0" in index, index
     print(index)
     print(views.show(ra))
     print(views.compare([ra, next(r for r in runs if r.id == b.run_id)]))
     problems = views.check(runs)
-    assert all("pending" in msg and rid in (ev.run_id, base.run_id) for rid, msg in problems), problems  # only the unjudged evals are flagged
+    assert all("pending" in msg and rid in (ev.run_id, base.run_id, tv.run_id) for rid, msg in problems), problems  # only the unjudged evals are flagged
     print("check: ok")
 
     brain_dir = os.path.join(TMP, "brain-experiments")

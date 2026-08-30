@@ -82,6 +82,19 @@ def _group_rows(runs):
     return header + "\n".join(rows) + "\n"
 
 
+def _eval_acc(mt):
+    """accuracy cell: plain evals → one number; teacher-view evals → T (teacher prompt) / S (plain prompt)."""
+    if "teacher_accuracy" in mt:
+        return f"T {_pct(mt.get('teacher_accuracy'))} / S {_pct(mt.get('student_accuracy'))}"
+    return _pct(mt.get("accuracy"))
+
+
+def _eval_parse(mt):
+    if "teacher_parse_rate" in mt:
+        return f"{_pct(mt.get('teacher_parse_rate'))} / {_pct(mt.get('student_parse_rate'))}"
+    return _pct(mt.get("parse_rate")) if "parse_rate" in mt else "–"
+
+
 def _eval_rows(evals):
     header = (
         "| eval | date | st | dataset | target | n | accuracy | parse | validity | verdict |\n"
@@ -97,7 +110,7 @@ def _eval_rows(evals):
             verdict = f"INVALID: {r.notes['reason']} — {verdict}".rstrip(" —")
         rows.append(
             f"| {_run_cell(r)} | {(r.meta.get('started') or '')[:10]} | {STATUS_GLYPH.get(r.status, '?')} | {r.dataset} | {target} "
-            f"| {mt.get('num_total', '–')} | {_pct(mt.get('accuracy'))} | {_pct(mt.get('parse_rate')) if 'parse_rate' in mt else '–'} | {r.validity} | {verdict} |"
+            f"| {mt.get('num_total', '–')} | {_eval_acc(mt)} | {_eval_parse(mt)} | {r.validity} | {verdict} |"
         )
     return header + "\n".join(rows) + "\n"
 
@@ -121,7 +134,7 @@ def render_index(runs):
     for r in latest:
         s = r.summary()
         if r.kind == "eval":
-            line = f"- {_run_cell(r)} — eval · {r.dataset}, {STATUS_GLYPH.get(r.status, '?')} {r.status}, accuracy {_pct(s['final'])}, {r.validity}"
+            line = f"- {_run_cell(r)} — eval · {r.dataset}, {STATUS_GLYPH.get(r.status, '?')} {r.status}, accuracy {_eval_acc(s.get('metrics') or {})}, {r.validity}"
         else:
             line = f"- {_run_cell(r)} — {r.dataset}, {STATUS_GLYPH.get(r.status, '?')} {r.status}, final {_pct(s['final'])} (Δ {_delta(s['delta'])}), {r.validity}"
         if r.notes.get("verdict"):
@@ -145,7 +158,7 @@ def render_index(runs):
                 out += [f"### sweep `{g}`", "", _group_rows(sorted(groups[g], key=lambda r: r.cfg.get("learning_rate") or 0))]
 
     if evals:
-        out += ["## Evaluations (standalone)", "", _eval_rows(evals)]
+        out += ["## Evaluations (standalone)", "", "Teacher-view rows: `T` = model + teacher prompt (demonstration in context), `S` = model + plain prompt, same training items.", "", _eval_rows(evals)]
 
     # per training run: its standalone evals by dataset (forgetting / cross-dataset), from results.json pointers
     with_results = [r for r in trains if r.results]

@@ -69,7 +69,7 @@ class Run:
     def summary(self, dataset=None):
         if self.kind == "eval":
             mt = self.meta.get("metrics") or (self.results[0].get("metrics") if self.results else {}) or {}
-            return {"acc0": None, "best": None, "best_step": None, "final": mt.get("accuracy"), "final_step": self.target.get("checkpoint_step"),
+            return {"acc0": None, "best": None, "best_step": None, "final": mt.get("accuracy", mt.get("teacher_accuracy")), "final_step": self.target.get("checkpoint_step"),
                     "delta": None, "last_step": None, "final_loss": None, "peak_gpu_mem_gb": None, "sec_per_step": None,
                     "time/generate": None, "time/loss": None, "time/vllm_sync": None, "metrics": mt}
         curve = self.eval_curve(dataset)

@@ -31,6 +31,8 @@ def parse_args():
     parser.add_argument("--run_dir", type=str, default=None, help="Training run this eval targets (default: inferred from a checkpoints/<run_id>/ path)")
     parser.add_argument("--name", type=str, default=None, help="Label of the eval record: run id = YYYY-MM-DD_<label> (default: eval-<dataset>-<target|base>)")
     parser.add_argument("--no_record", action="store_true", help="Do not write an eval record")
+    parser.add_argument("--num_samples", type=int, default=-1, help="Evaluate only the first N items (eval split) / a seeded N-item subset (teacher view); -1 = all")
+    parser.add_argument("--teacher_view", action="store_true", help="Score the model under the trainer's teacher prompt (demonstration in context) and under the plain prompt on the same --num_samples training items")
     parser.add_argument("--gpu_wait", type=float, default=300, help="Seconds to wait for another process to release the GPU before loading anything (0 = check once)")
     parser.add_argument("--allow_shared_gpu", action="store_true", help="Start even if the GPU is still >10%% occupied after --gpu_wait")
     return parser.parse_args()
@@ -165,9 +167,12 @@ def main():
         if target is None:
             d = infer_run_dir(args.adapter_path, args.model_path)
             target = os.path.basename(d) if d else None
+        view = "teacher-view-" if args.teacher_view else ""
         rec = EvalRecord.start(
-            args.name or f"eval-science-{target or 'base'}", "science", args.model_path, adapter_path=args.adapter_path, target_run=target,
-            settings={"max_new_tokens": args.max_new_tokens, "temperature": args.temperature, "seed": args.seed, "max_model_len": args.max_model_len},
+            args.name or f"eval-science-{view}{target or 'base'}", "science", args.model_path, adapter_path=args.adapter_path, target_run=target,
+            settings={**{"max_new_tokens": args.max_new_tokens, "temperature": args.temperature, "seed": args.seed, "max_model_len": args.max_model_len},
+                      "view": "teacher" if args.teacher_view else "student", "split": "train" if args.teacher_view else "eval"},
+            num_samples=args.num_samples if args.num_samples > 0 else None,
         )
 
     # Load model and data
@@ -178,7 +183,22 @@ def main():
         adapter_path=args.adapter_path,
         max_lora_rank=args.max_lora_rank,
     )
+    if args.teacher_view:
+        from sdft.data import load_teacher_view
+        from sdft.teacher_view import run_teacher_view
+
+        rows = load_teacher_view("science", args.num_samples, args.seed)
+        run_teacher_view(
+            "science", rows,
+            generate=lambda prompts: generate_responses(llm, tokenizer, prompts, args.max_new_tokens, args.temperature, args.seed, args.adapter_path),
+            score=lambda responses, golds: (evaluate_correctness(responses, golds), {}),
+            output_dir=args.output_dir if args.output_dir else (args.adapter_path or args.model_path),
+            rec=rec,
+        )
+        return
     test_data = load_test_data()
+    if args.num_samples > 0:
+        test_data = test_data.select(range(min(args.num_samples, len(test_data))))
 
     prompts = [example['prompt'] for example in test_data]
     answers = [example['answer'] for example in test_data]

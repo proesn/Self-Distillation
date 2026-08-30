@@ -74,6 +74,7 @@ def parse_args():
     parser.add_argument("--run_dir", type=str, default=None, help="Training run this eval targets (default: inferred from a checkpoints/<run_id>/ path)")
     parser.add_argument("--name", type=str, default=None, help="Label of the eval record: run id = YYYY-MM-DD_<label> (default: eval-<dataset>-<target|base>)")
     parser.add_argument("--no_record", action="store_true", help="Do not write an eval record")
+    parser.add_argument("--teacher_view", action="store_true", help="Score the model under the trainer's teacher prompt (demonstration in context) and under the plain prompt on the same --num_samples training items")
     parser.add_argument("--gpu_wait", type=float, default=300, help="Seconds to wait for another process to release the GPU before loading anything (0 = check once)")
     parser.add_argument("--allow_shared_gpu", action="store_true", help="Start even if the GPU is still >10%% occupied after --gpu_wait")
     return parser.parse_args()
@@ -317,9 +318,11 @@ def main():
         if target is None:
             d = infer_run_dir(args.adapter_path, args.model_path)
             target = os.path.basename(d) if d else None
+        view = "teacher-view-" if args.teacher_view else ""
         rec = EvalRecord.start(
-            args.name or f"eval-kkp-{target or 'base'}", "kkp", args.model_path, adapter_path=args.adapter_path, target_run=target,
-            settings={"max_new_tokens": args.max_new_tokens, "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed, "max_model_len": args.max_model_len},
+            args.name or f"eval-kkp-{view}{target or 'base'}", "kkp", args.model_path, adapter_path=args.adapter_path, target_run=target,
+            settings={"max_new_tokens": args.max_new_tokens, "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed, "max_model_len": args.max_model_len,
+                      "view": "teacher" if args.teacher_view else "student", "split": "train" if args.teacher_view else "eval"},
             num_samples=args.num_samples,
         )
 
@@ -330,6 +333,32 @@ def main():
         adapter_path=args.adapter_path,
         max_lora_rank=args.max_lora_rank,
     )
+    if args.teacher_view:
+        from sdft.data import load_teacher_view
+        from sdft.teacher_view import run_teacher_view
+
+        rows = load_teacher_view("kkp", args.num_samples, args.seed)
+        names_list = [extract_names(r["prompt"][-1]["content"]) for r in rows]
+
+        def score(responses, golds):
+            answers = [extract_assignment(g, names) for g, names in zip(golds, names_list)]
+            scores, _, parse_success = evaluate_correctness(responses, answers, names_list)
+            return scores, {
+                "parse_rate": float(np.mean(parse_success)) if parse_success else 0.0,
+                "gold_parse_rate": float(np.mean([len(a) == len(n) for a, n in zip(answers, names_list)])) if answers else 0.0,
+            }
+
+        run_teacher_view(
+            "kkp", rows,
+            generate=lambda prompts: generate_responses(
+                llm, tokenizer, prompts, max_new_tokens=args.max_new_tokens, temperature=args.temperature,
+                seed=args.seed, top_p=args.top_p, top_k=args.top_k, adapter_path=args.adapter_path,
+            ),
+            score=score,
+            output_dir=args.output_dir if args.output_dir else (args.adapter_path or args.model_path),
+            rec=rec,
+        )
+        return
     eval_data = load_test_data(args.num_samples, data_path=args.data_path)
 
     prompts = [ex["prompt"] for ex in eval_data]
