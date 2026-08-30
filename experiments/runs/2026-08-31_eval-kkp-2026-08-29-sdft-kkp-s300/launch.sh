@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Re-run of 2026-08-31_eval-kkp-2026-08-29-sdft-kkp-s300 — generated at launch by sdft/runlog.py.
+#   typed:   experiments/launch/2026-08-30_eval-kkp-baseline.sh 
+#   host:    jong    cwd: /home/user/jjkim/Self-Distillation
+#   python:  /home/user/jjkim/.envs/jjkim_distillation/bin/python
+# Usage: bash experiments/runs/2026-08-31_eval-kkp-2026-08-29-sdft-kkp-s300/launch.sh [--name <label>] [extra main.py args]
+#   Runs at the recorded code state. If your checkout differs (other commit, dirty tree, or the run
+#   had a code.patch), it runs inside a throwaway worktree under .rerun-worktrees/ — your checkout
+#   is never touched. SDFT_RERUN_SAME_CODE=0 runs your current code instead.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SHA=3a46b6ad77f7e2a42f3b421747232912de0eea40
+if [ "${SDFT_RERUN_SAME_CODE:-1}" = 1 ] && { [ "$(git rev-parse HEAD)" != "$SHA" ] || [ -n "$(git status --porcelain)" ] || [ -s "$HERE/code.patch" ]; }; then
+  WT="$ROOT/.rerun-worktrees/${SHA:0:10}"
+  [ -d "$WT" ] || git worktree add --detach --quiet "$WT" "$SHA"
+  git -C "$WT" checkout --quiet -- .
+  [ -s "$HERE/code.patch" ] && git -C "$WT" apply "$HERE/code.patch"
+  echo "[launch.sh] running in worktree $WT at $SHA$([ -s "$HERE/code.patch" ] && echo ' + code.patch')"
+  cd "$WT"
+fi
+export CONDA_DEFAULT_ENV=/home/user/jjkim/.envs/jjkim_distillation
+export CUDA_VISIBLE_DEVICES=0
+export HF_HOME=/home/user/jjkim/.cache/huggingface
+export SDFT_LAUNCHER=/home/user/jjkim/Self-Distillation/experiments/launch/2026-08-30_eval-kkp-baseline.sh
+export SDFT_LAUNCH_CMD='experiments/launch/2026-08-30_eval-kkp-baseline.sh '
+export TORCH_HOME=/home/user/jjkim/.cache/torch
+export WANDB_PROJECT=self-distillation
+export SDFT_RUNS_DIR="${SDFT_RUNS_DIR:-$ROOT/experiments/runs}"
+export SDFT_CHECKPOINTS_DIR="${SDFT_CHECKPOINTS_DIR:-$ROOT/checkpoints}"
+exec "${PYTHON:-/home/user/jjkim/.envs/jjkim_distillation/bin/python}" eval_kkp.py --model_path Qwen/Qwen3-4B --adapter_path checkpoints/2026-08-29_sdft-kkp/checkpoint-300 --run_dir experiments/runs/2026-08-29_sdft-kkp --name eval-kkp-2026-08-29_sdft-kkp-s300-rerun --output_dir checkpoints/2026-08-29_sdft-kkp/checkpoint-300/eval_kkp --seed 42 --temperature 0.0 --max_new_tokens 8192 --max_model_len 16384 --max_new_tokens 4096 "$@"

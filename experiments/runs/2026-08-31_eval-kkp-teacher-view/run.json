@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "id": "2026-08-31_eval-kkp-teacher-view",
+  "kind": "eval",
+  "name": "eval-kkp-teacher-view",
+  "group": null,
+  "tags": [],
+  "idea": [],
+  "status": "finished",
+  "started": "2026-08-30T17:16:48+00:00",
+  "ended": "2026-08-30T17:28:38+00:00",
+  "host": "jong",
+  "gpu": "NVIDIA RTX A6000",
+  "git": {
+    "sha": "3a46b6ad77f7e2a42f3b421747232912de0eea40",
+    "branch": "main",
+    "dirty": true,
+    "dirty_tracked": true,
+    "modified": [
+      "experiments/INDEX.md"
+    ],
+    "untracked": [
+      "env.sh",
+      "eval_results/",
+      "experiments/runs/2026-08-29_sdft-kkp/results.json",
+      "experiments/runs/2026-08-31_eval-kkp-2026-08-29-sdft-kkp-s300/",
+      "experiments/runs/2026-08-31_eval-kkp-base/",
+      "experiments/runs/2026-08-31_eval-science-teacher-view/",
+      "experiments/runs/2026-08-31_eval-tooluse-teacher-view/"
+    ]
+  },
+  "cmd": "eval_kkp.py --model_path Qwen/Qwen3-4B --name eval-kkp-teacher-view --output_dir eval_results/eval-kkp-teacher-view --teacher_view --num_samples 300 --seed 42 --temperature 0.0 --max_new_tokens 8192 --max_model_len 16384 --max_new_tokens 4096",
+  "launch": {
+    "invocation": "experiments/launch/2026-08-31_eval-teacher-view-base.sh ",
+    "launcher": "/home/user/jjkim/Self-Distillation/experiments/launch/2026-08-31_eval-teacher-view-base.sh",
+    "launcher_sha256": "42398d74bfd81a1506914b51ba35f7b9e06a963dc12784543ddaba9a6d605d11",
+    "python": "/home/user/jjkim/.envs/jjkim_distillation/bin/python",
+    "cwd": "/home/user/jjkim/Self-Distillation",
+    "argv": [
+      "eval_kkp.py",
+      "--model_path",
+      "Qwen/Qwen3-4B",
+      "--name",
+      "eval-kkp-teacher-view",
+      "--output_dir",
+      "eval_results/eval-kkp-teacher-view",
+      "--teacher_view",
+      "--num_samples",
+      "300",
+      "--seed",
+      "42",
+      "--temperature",
+      "0.0",
+      "--max_new_tokens",
+      "8192",
+      "--max_model_len",
+      "16384",
+      "--max_new_tokens",
+      "4096"
+    ],
+    "env": {
+      "CONDA_DEFAULT_ENV": "/home/user/jjkim/.envs/jjkim_distillation",
+      "CUDA_VISIBLE_DEVICES": "0",
+      "HF_HOME": "/home/user/jjkim/.cache/huggingface",
+      "SDFT_LAUNCHER": "/home/user/jjkim/Self-Distillation/experiments/launch/2026-08-31_eval-teacher-view-base.sh",
+      "SDFT_LAUNCH_CMD": "experiments/launch/2026-08-31_eval-teacher-view-base.sh ",
+      "TORCH_HOME": "/home/user/jjkim/.cache/torch",
+      "WANDB_PROJECT": "self-distillation"
+    }
+  },
+  "target": {
+    "run": null,
+    "model": "Qwen/Qwen3-4B",
+    "adapter_path": null,
+    "checkpoint_step": null
+  },
+  "data": {
+    "name": "kkp",
+    "num_samples": 300
+  },
+  "settings": {
+    "max_new_tokens": 4096,
+    "temperature": 0.0,
+    "top_p": 0.95,
+    "top_k": 64,
+    "seed": 42,
+    "max_model_len": 16384,
+    "view": "teacher",
+    "split": "train"
+  },
+  "env": {
+    "python": "3.12.14",
+    "torch": "2.9.0",
+    "transformers": "4.57.1",
+    "trl": "0.24.0",
+    "peft": "0.17.1",
+    "vllm": "0.12.0",
+    "datasets": "4.3.0",
+    "accelerate": "1.11.0"
+  },
+  "metrics": {
+    "teacher_accuracy": 0.8933333333333333,
+    "student_accuracy": 0.5366666666666666,
+    "num_total": 300,
+    "teacher_only": 115,
+    "student_only": 8,
+    "both": 153,
+    "gap": 0.3566666666666667,
+    "teacher_parse_rate": 0.9833333333333333,
+    "teacher_gold_parse_rate": 1.0,
+    "student_parse_rate": 0.8,
+    "student_gold_parse_rate": 1.0
+  },
+  "error": null
+}

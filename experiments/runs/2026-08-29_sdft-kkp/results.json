@@ -1,0 +1,23 @@
+[
+  {
+    "dataset": "kkp",
+    "time": "2026-08-30T17:06:30+00:00",
+    "checkpoint": "checkpoints/2026-08-29_sdft-kkp/checkpoint-300",
+    "metrics": {
+      "accuracy": 0.5066666666666667,
+      "parse_rate": 0.9866666666666667,
+      "num_total": 300
+    },
+    "settings": {
+      "max_new_tokens": 4096,
+      "temperature": 0.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "seed": 42,
+      "max_model_len": 16384,
+      "view": "student",
+      "split": "eval"
+    },
+    "eval_run": "2026-08-31_eval-kkp-2026-08-29-sdft-kkp-s300"
+  }
+]
