@@ -20,6 +20,7 @@ from distil_trainer import DistilTrainer
 from sdft.data import DATASETS, load_train_dataset, prompt_length_report
 from sdft.eval_callback import PeriodicEvalCallback
 from sdft.models import attach_adapters, load_base_model, load_tokenizer
+from sdft.gpu import wait_gpu_free
 from sdft.runlog import CHECKPOINTS_DIR, MetricsCallback, RunRecord, infer_run_dir, instrument_timing, make_run_id
 
 
@@ -62,7 +63,8 @@ def parse_args():
     parser.add_argument("--idea", type=str, nargs="*", default=[], help="Brain idea slugs this run tests")
     parser.add_argument("--hypothesis", type=str, default=None, help="One line written into notes.md")
     parser.add_argument("--no_record", action="store_true", help="Do not write a run record (debug runs)")
-    parser.add_argument("--allow_shared_gpu", action="store_true", help="Start even if the GPU is already >10% occupied by another process (default: abort before loading anything)")
+    parser.add_argument("--gpu_wait", type=float, default=300, help="Seconds to wait for another process to release the GPU before loading anything (0 = check once)")
+    parser.add_argument("--allow_shared_gpu", action="store_true", help="Start even if the GPU is still >10%% occupied after --gpu_wait (default: abort before loading anything)")
     parser.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.3, help="Share of the GPU reserved by the colocated vLLM engine")
     # Tokenizer / logging
     parser.add_argument("--enable_thinking", action="store_true", help="Keep Qwen3 thinking mode on (default: chat template rendered with enable_thinking=False)")
@@ -71,26 +73,10 @@ def parse_args():
     return parser.parse_args()
 
 
-def check_gpu_free(allow_shared):
-    """Abort up front when another process already holds the GPU — vLLM would fail 3 minutes later."""
-    import torch
-
-    if not torch.cuda.is_available():
-        return
-    free, total = torch.cuda.mem_get_info()
-    used_gb = (total - free) / 2**30
-    if used_gb > 0.1 * total / 2**30:
-        msg = f"GPU already has {used_gb:.1f} GiB in use by another process (nvidia-smi shows who)."
-        if allow_shared:
-            print("[warning] " + msg + " Continuing (--allow_shared_gpu).")
-        else:
-            raise SystemExit(msg + " Refusing to start; pass --allow_shared_gpu to override.")
-
-
 def main():
     args = parse_args()
     set_seed(args.seed)
-    check_gpu_free(args.allow_shared_gpu)
+    wait_gpu_free(args.allow_shared_gpu, args.gpu_wait)
     run_id = make_run_id(args.name or args.dataset_name)
     args.output_dir = args.output_dir or os.path.join(CHECKPOINTS_DIR, run_id)
     args.run_name = args.run_name or run_id
@@ -209,7 +195,15 @@ def main():
         record.finalize("finished")
 
     # The colocated vLLM engine + NCCL group tear down badly at interpreter exit (segfault / non-zero
-    # status after everything is saved and logged). The record and wandb are already final, so exit here.
+    # status after everything is saved and logged), so the process leaves through os._exit. That skips
+    # atexit, where wandb would mark the run finished — do it explicitly.
+    try:
+        import wandb
+
+        if wandb.run is not None:
+            wandb.finish()
+    except Exception:
+        pass
     import torch.distributed as dist
 
     if dist.is_available() and dist.is_initialized():

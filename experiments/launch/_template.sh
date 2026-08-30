@@ -7,7 +7,7 @@
 # Every launch is one script here, tracked in git. main.py copies this file into the run's
 # record (experiments/runs/<id>/launcher.sh) and stores the command you typed, so the run
 # and the script that produced it can never drift apart. Re-run a run: `python -m explog rerun <id>`.
-# Start it detached:  nohup <this file> > /dev/null 2>&1 &     (it logs itself to logs/)
+# Start it in a tmux pane:  bash <this file>     (it also logs itself to logs/)
 set -uo pipefail
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 export SDFT_LAUNCHER="$(realpath "$0")" SDFT_LAUNCH_CMD="$(printf '%q ' "$0" "$@")"

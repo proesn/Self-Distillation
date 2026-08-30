@@ -9,6 +9,8 @@ import torch
 from datasets import load_from_disk
 from transformers import AutoTokenizer
 
+from sdft.gpu import wait_gpu_free
+
 
 DATASET_NAME = "RedaAlami/knights-knaves-puzzles"
 SPLIT = "eval_data"
@@ -72,6 +74,8 @@ def parse_args():
     parser.add_argument("--run_dir", type=str, default=None, help="Training run this eval targets (default: inferred from a checkpoints/<run_id>/ path)")
     parser.add_argument("--name", type=str, default=None, help="Label of the eval record: run id = YYYY-MM-DD_<label> (default: eval-<dataset>-<target|base>)")
     parser.add_argument("--no_record", action="store_true", help="Do not write an eval record")
+    parser.add_argument("--gpu_wait", type=float, default=300, help="Seconds to wait for another process to release the GPU before loading anything (0 = check once)")
+    parser.add_argument("--allow_shared_gpu", action="store_true", help="Start even if the GPU is still >10%% occupied after --gpu_wait")
     return parser.parse_args()
 
 
@@ -304,6 +308,7 @@ def print_sample_outputs(eval_data, responses, predictions, scores, max_samples=
 
 def main():
     args = parse_args()
+    wait_gpu_free(args.allow_shared_gpu, args.gpu_wait)
     rec = None
     if not args.no_record:
         from sdft.runlog import EvalRecord, infer_run_dir

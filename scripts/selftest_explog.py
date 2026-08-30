@@ -110,6 +110,22 @@ def main():
     assert ledger.startswith("---\nid: ") and "validity:" in ledger and "metrics: {" in ledger, ledger
     print(ledger)
     print(open(idx).read())
+    # GPU pre-flight: busy twice, then free; then a device that never frees.
+    from sdft.gpu import wait_gpu_free
+
+    seen = iter([(30.0, 48.0), (7.1, 48.0), (0.4, 48.0)])
+    msgs = []
+    wait_gpu_free(wait_s=60, poll_s=0, probe=lambda: next(seen), log=msgs.append)
+    assert len(msgs) == 2 and "released" in msgs[1], msgs
+    try:
+        wait_gpu_free(wait_s=0, poll_s=0, probe=lambda: (30.0, 48.0), log=msgs.append)
+        raise AssertionError("expected SystemExit")
+    except SystemExit as e:
+        assert "Refusing" in str(e), e
+    wait_gpu_free(allow_shared=True, wait_s=0, poll_s=0, probe=lambda: (30.0, 48.0), log=msgs.append)
+    assert msgs[-1].startswith("[warning]"), msgs
+    print("gpu wait: ok")
+
     print("SELFTEST OK")
 
 

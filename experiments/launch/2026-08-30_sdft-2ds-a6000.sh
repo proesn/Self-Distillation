@@ -6,8 +6,10 @@
 #   run 2026-08-29_sdft-kkp: Qwen3-4B + LoRA r64, EMA teacher 0.01, forward KL, lr 5e-5, 2 epochs each
 #   (science 168 steps, tooluse 252), periodic eval every 30 steps on 100 samples. Sequential on one A6000.
 #   Launched separately because the 08-29 chain stopped after kkp (see that script's header).
+#   Ran 2026-08-30: science finished (2026-08-30_sdft-science); the tooluse leg was refused by the GPU
+#   pre-flight 5 s after science exited and is relaunched as 2026-08-30_sdft-tooluse-a6000.sh. DO NOT re-run.
 #
-#   Start:     nohup experiments/launch/2026-08-30_sdft-2ds-a6000.sh > /dev/null 2>&1 &
+#   Start:     bash experiments/launch/2026-08-30_sdft-2ds-a6000.sh   (in a tmux pane)
 #   Progress:  tail -f logs/2026-08-30_sdft-2ds-a6000.log   ·   python -m explog table
 set -uo pipefail
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
