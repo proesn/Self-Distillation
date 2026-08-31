@@ -16,6 +16,32 @@ REPO_NAME = "Self-Distillation"
 VALIDITY_MAP = {"pending": "suspect", "valid": "valid", "suspect": "suspect", "invalid": "invalid"}
 
 
+def _eval_bits(run):
+    """(target, config, metrics, headline) for a kind: eval record."""
+    m = run.meta
+    t = m.get("target") or {}
+    st = m.get("settings") or {}
+    tgt = f"{t.get('run')}@{t.get('checkpoint_step')}" if t.get("run") else f"base {(t.get('model') or '?').split('/')[-1]}"
+    mt = dict(m.get("metrics") or {})
+    n = mt.get("num_total") or (m.get("data") or {}).get("num_samples")
+    config = (
+        f"eval · {run.dataset} · target {tgt} · view {st.get('view', 'student')} · split {st.get('split', 'eval')} · n {n} · "
+        f"max_new {st.get('max_new_tokens')} · temp {st.get('temperature')} · seed {st.get('seed')}"
+    )
+    if "teacher_accuracy" in mt:
+        acc = f"T {_pct(mt.get('teacher_accuracy'))} / S {_pct(mt.get('student_accuracy'))}"
+        headline = (
+            f"**Teacher view ({run.dataset}, {tgt}, n={n} train items):** teacher {_pct(mt.get('teacher_accuracy'))} / "
+            f"student {_pct(mt.get('student_accuracy'))} (gap {_delta(mt.get('gap'))} pt; "
+            f"teacher-only {mt.get('teacher_only')} · student-only {mt.get('student_only')} · both {mt.get('both')})."
+        )
+    else:
+        acc = _pct(mt.get("accuracy"))
+        parse = f", parse {_pct(mt.get('parse_rate'))}" if "parse_rate" in mt else ""
+        headline = f"**Standalone eval ({run.dataset}, {tgt}, n={n}):** accuracy {_pct(mt.get('accuracy'))}{parse}."
+    return tgt, config, {"dataset": run.dataset, **mt}, acc, headline
+
+
 def ledger_text(run):
     m = run.meta
     s = run.summary()
@@ -32,11 +58,20 @@ def ledger_text(run):
     for ds, res in run.standalone().items():
         metrics[f"standalone_{ds}"] = res
     cfg = run.cfg
-    config = (
-        f"{run.dataset} · {run.model} · lr {cfg.get('learning_rate')} · ep {cfg.get('num_train_epochs')} · "
-        f"lora r{lora.get('r', '-')} · len {cfg.get('max_prompt_length')}/{cfg.get('max_completion_length')} · "
-        f"alpha {cfg.get('alpha')} · ema {cfg.get('ref_model_mixup_alpha') if cfg.get('sync_ref_model', True) else 0} · seed {cfg.get('seed')}"
-    )
+    if run.kind == "eval":
+        tgt, config, metrics, _acc, headline = _eval_bits(run)
+        checkpoint = (m.get("target") or {}).get("adapter_path") or (m.get("target") or {}).get("model")
+    else:
+        config = (
+            f"{run.dataset} · {run.model} · lr {cfg.get('learning_rate')} · ep {cfg.get('num_train_epochs')} · "
+            f"lora r{lora.get('r', '-')} · len {cfg.get('max_prompt_length')}/{cfg.get('max_completion_length')} · "
+            f"alpha {cfg.get('alpha')} · ema {cfg.get('ref_model_mixup_alpha') if cfg.get('sync_ref_model', True) else 0} · seed {cfg.get('seed')}"
+        )
+        checkpoint = m.get("output_dir")
+        headline = (
+            f"**In-training eval ({run.dataset}):** acc@0 {_pct(s['acc0'])} → best {_pct(s['best'])} @ {s['best_step']} "
+            f"→ final {_pct(s['final'])} (Δ {_delta(s['delta'])} pt)."
+        )
     validity = VALIDITY_MAP.get(run.validity, "suspect")
     idea = ", ".join((m.get("idea") or []) + ([run.notes["idea"]] if run.notes.get("idea") else []))
     lines = [
@@ -47,7 +82,7 @@ def ledger_text(run):
         f"arm: {m.get('group') or m.get('name') or run.id}",
         f"idea: [{idea}]",
         f"config: {config}",
-        f"checkpoint: {m.get('output_dir')} ({m.get('host')})",
+        f"checkpoint: {checkpoint} ({m.get('host')})",
         f"metrics: {json.dumps(metrics, default=str)}",
         f"validity: {validity}",
         f"host: {m.get('host')}",
@@ -59,7 +94,7 @@ def ledger_text(run):
         + (" (dirty)" if (m.get("git") or {}).get("dirty") else "")
         + f" · **wandb:** {m.get('wandb_url') or '–'}",
         "",
-        f"**In-training eval ({run.dataset}):** acc@0 {_pct(s['acc0'])} → best {_pct(s['best'])} @ {s['best_step']} → final {_pct(s['final'])} (Δ {_delta(s['delta'])} pt).",
+        headline,
     ]
     if run.validity == "pending":
         lines += ["", "_Validity not yet judged in the repo (`explog note`); recorded here as `suspect`._"]
@@ -90,9 +125,19 @@ def index_text(runs):
         s = r.summary()
         cfg = r.cfg
         lora = r.meta.get("lora") or {}
+        if r.kind == "eval":
+            tgt, _config, _metrics, acc, _headline = _eval_bits(r)
+            st = r.meta.get("settings") or {}
+            model = ((r.meta.get("target") or {}).get("model") or "?").split("/")[-1]
+            cell = f"eval → {tgt}" + (f" · {st.get('view')} view" if st.get("view") == "teacher" else "")
+            acc_cell = acc
+        else:
+            model = r.model.split("/")[-1]
+            cell = f"lr {cfg.get('learning_rate')} · ep {cfg.get('num_train_epochs')} · r{lora.get('r', '-')}"
+            acc_cell = f"{_pct(s['acc0'])} → {_pct(s['final'])} ({_delta(s['delta'])})"
         lines.append(
-            f"| [`{r.id}`](runs/{r.id}.md) | {r.dataset} | {r.model.split('/')[-1]} | lr {cfg.get('learning_rate')} · ep {cfg.get('num_train_epochs')} · r{lora.get('r', '-')} "
-            f"| {_pct(s['acc0'])} → {_pct(s['final'])} ({_delta(s['delta'])}) | {VALIDITY_MAP.get(r.validity, 'suspect')} | {r.notes.get('verdict') or ''} |"
+            f"| [`{r.id}`](runs/{r.id}.md) | {r.dataset} | {model} | {cell} "
+            f"| {acc_cell} | {VALIDITY_MAP.get(r.validity, 'suspect')} | {r.notes.get('verdict') or ''} |"
         )
     return "\n".join(lines) + "\n"
 

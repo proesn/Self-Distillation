@@ -151,6 +151,13 @@ def main():
     written, idx = brain.sync(runs, brain_experiments_dir=brain_dir)
     ledger = open(written[0]).read()
     assert ledger.startswith("---\nid: ") and "validity:" in ledger and "metrics: {" in ledger, ledger
+    tv_ledger = open(next(w for w in written if "teacher-view" in w)).read()
+    assert "Teacher view (science, base Qwen3-4B, n=300 train items)" in tv_ledger and "teacher 90.0 / student 40.0" in tv_ledger, tv_ledger
+    assert "lr None" not in tv_ledger and "acc0" not in tv_ledger and "checkpoint: None" not in tv_ledger, tv_ledger
+    base_ledger = open(next(w for w in written if "eval-kkp-base" in w)).read()
+    assert "Standalone eval (kkp, base Qwen/Qwen3-4B".replace("Qwen/", "") in base_ledger and "accuracy 57.0, parse 90.0" in base_ledger, base_ledger
+    idx_text = open(idx).read()
+    assert "T 90.0 / S 40.0" in idx_text and "eval → base Qwen3-4B · teacher view" in idx_text and "lr None" not in idx_text, idx_text
     print(ledger)
     print(open(idx).read())
     # GPU pre-flight: busy twice, then free; then a device that never frees.
